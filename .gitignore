@@ -4,6 +4,12 @@ CLAUDE.md
 # Local Azure Functions settings (contains secrets)
 local.settings.json
 
+# Test coverage
+.coverage
+coverage.json
+htmlcov/
+.pytest_cache/
+
 # Python
 __pycache__/
 *.py[cod]
