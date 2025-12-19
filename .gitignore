@@ -1,0 +1,30 @@
+# Project-specific
+CLAUDE.md
+
+# Local Azure Functions settings (contains secrets)
+local.settings.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Azure Functions
+bin/
+obj/
+.python_packages/
+
+# OS
+.DS_Store
+Thumbs.db

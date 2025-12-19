@@ -1,0 +1,164 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "CodeRunner API",
+    "description": "Single endpoint to run Python scripts in a sandboxed subprocess.\n\nSupports two modes:\n• JSON mode: POST application/json with { script, timeout_s }.\n• Raw mode: POST text/plain (body = script), with timeout_s query-param.\n\nLimits:\n– script ≤ 256 KiB (UTF-8 bytes)\n– timeout_s ≤ 300 s (clamped)\n– OOM kills at ~1.5 GB\n– Runs inside Function host sandbox, not fully container-isolated.\n\nSuitable for development/testing; do not use with untrusted code in production.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Developer Support",
+      "url": "https://github.com/your-org/CodeRunner/issues",
+      "email": "support@yourdomain.com"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  },
+  "host": "coderunner.azurewebsites.net",
+  "basePath": "/api",
+  "schemes": [
+    "https"
+  ],
+  "consumes": [
+    "application/json",
+    "text/plain"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/run": {
+      "post": {
+        "summary": "Execute a Python script",
+        "description": "Runs the provided Python code and returns exit_code, stdout, stderr.\n\nTwo content-type modes supported:\n1) JSON mode (Content-Type: application/json): Send JSON object with 'script' property and optional 'timeout_s'\n2) Raw mode (Content-Type: text/plain): Send raw script as body text; 'timeout_s' via query parameter\n\nNote: In JSON mode, the 'script' property is required. In raw mode, the entire body is treated as the script.",
+        "operationId": "runPythonScript",        "parameters": [
+          {
+            "name": "timeout_s",
+            "in": "query",
+            "description": "Max seconds to allow script to run. Must be >0; values >300 are clamped to 300. Used when Content-Type is text/plain, or as fallback when not specified in JSON body.",
+            "required": false,
+            "type": "integer",
+            "format": "int32",
+            "default": 60
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "description": "Request body. For application/json: JSON object with script and optional timeout_s. For text/plain: raw Python script text.",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/RunRequest"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Script execution result",
+            "schema": {
+              "$ref": "#/definitions/RunResponse"
+            },
+            "examples": {
+              "application/json": {
+                "exit_code": 0,
+                "stdout": "Hello, world!\n",
+                "stderr": ""
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request – invalid JSON or missing fields",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            },
+            "examples": {
+              "application/json": {
+                "code": 400,
+                "message": "Request body must be valid JSON."
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large – script > 256 KiB",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            },
+            "examples": {
+              "application/json": {
+                "code": 413,
+                "message": "Script too large: 300000 bytes > 262144 bytes."
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            },
+            "examples": {
+              "application/json": {
+                "code": 500,
+                "message": "Internal error writing script to disk."
+              }
+            }
+          }
+        }
+      }
+    }
+  },  "definitions": {
+    "RunRequest": {
+      "type": "object",
+      "description": "Request body for executing Python code. For JSON requests: use 'script' property and optionally 'timeout_s'. For text/plain requests: the entire body is treated as the script text, and 'timeout_s' must be provided via query parameter.",
+      "properties": {
+        "script": {
+          "type": "string",
+          "description": "The Python code to execute (≤ 256 KiB). Required for JSON requests, ignored for text/plain requests."
+        }
+      },
+      "additionalProperties": false
+    },
+    "RunResponse": {
+      "type": "object",
+      "required": [
+        "exit_code",
+        "stdout",
+        "stderr"
+      ],
+      "properties": {
+        "exit_code": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Subprocess exit code: 0=success; 124=timeout; 137=OOM; -1=internal error."
+        },
+        "stdout": {
+          "type": "string",
+          "description": "Captured standard output."
+        },
+        "stderr": {
+          "type": "string",
+          "description": "Captured standard error (and any timeout/internal-error notes)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32",
+          "description": "HTTP status code (e.g. 400, 413, 500)."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable error message."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
+
