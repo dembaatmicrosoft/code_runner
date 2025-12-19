@@ -1,170 +1,211 @@
+from dataclasses import dataclass
+from typing import Optional, Tuple
 import azure.functions as func
-import logging
-import tempfile
-import uuid
-import os
 import json
+import logging
+import os
 import subprocess
 import sys
+import tempfile
+import uuid
+
 
 # Constants
-MAX_SCRIPT_BYTES = 256 * 1024   # 256 KiB
-MAX_TIMEOUT_S = 300              # 5 minutes
+MAX_SCRIPT_BYTES = 256 * 1024
+MAX_TIMEOUT_S = 300
+DEFAULT_TIMEOUT_S = 60
 
-app = func.FunctionApp()  # V2 programming model
+CONTENT_TYPE_JSON = "application/json"
+CONTENT_TYPE_TEXT = "text/plain"
+ENCODING_UTF8 = "utf-8"
+
+EXIT_CODE_TIMEOUT = 124
+EXIT_CODE_INTERNAL_ERROR = -1
 
 
-@app.function_name(name="RunPythonScript")
-@app.route(
-    route="run",
-    methods=["POST"],
-    auth_level=func.AuthLevel.ANONYMOUS
-)
-def run_script(req: func.HttpRequest) -> func.HttpResponse:
-    """Runs user-supplied Python code in a subprocess, returns exit_code/stdout/stderr."""
+@dataclass
+class ExecutionResult:
+    exit_code: int
+    stdout: str
+    stderr: str
 
-    logging.info("Received request to run python script.")
 
-    # Determine mode: JSON vs. raw-text
+def error_response(message: str, status_code: int = 400) -> func.HttpResponse:
+    """Create a standardized error response."""
+    return func.HttpResponse(
+        json.dumps({"error": message}),
+        status_code=status_code,
+        mimetype=CONTENT_TYPE_JSON
+    )
+
+
+def parse_request(req: func.HttpRequest) -> Tuple[str, int] | func.HttpResponse:
+    """Extract script and timeout from request. Returns (script, timeout) or error response."""
     content_type = req.headers.get("content-type", "")
-    if content_type.startswith("text/plain"):
-        # Raw mode: code = body, timeout in query
-        try:
-            script = req.get_body().decode("utf-8")
-        except Exception:
-            return func.HttpResponse(
-                json.dumps({"error": "Unable to read request body as UTF-8 text."}),
-                status_code=400,
-                mimetype="application/json"
-            )
-        # parse timeout_s from query
-        timeout_s = req.params.get("timeout_s", None)
-        if timeout_s is None:
-            timeout_s = 60
-        else:
-            try:
-                timeout_s = int(timeout_s)
-            except ValueError:
-                return func.HttpResponse(
-                    json.dumps({"error": "`timeout_s` query parameter must be integer."}),
-                    status_code=400,
-                    mimetype="application/json"
-                )
-    else:
-        # JSON mode
-        try:
-            body = req.get_json()
-        except ValueError:
-            return func.HttpResponse(
-                json.dumps({"error": "Request body must be valid JSON."}),
-                status_code=400,
-                mimetype="application/json"
-            )
 
-        script = body.get("script")
-        if not isinstance(script, str):
-            return func.HttpResponse(
-                json.dumps({"error": "`script` field is required and must be a string."}),
-                status_code=400,
-                mimetype="application/json"
-            )
+    if content_type.startswith(CONTENT_TYPE_TEXT):
+        return _parse_raw_request(req)
+    return _parse_json_request(req)
 
-        # Timeout parsing
-        timeout_s = body.get("timeout_s", 60)
-        try:
-            timeout_s = int(timeout_s)
-        except (ValueError, TypeError):
-            return func.HttpResponse(
-                json.dumps({"error": "`timeout_s` must be an integer."}),
-                status_code=400,
-                mimetype="application/json"
-            )
 
-    # Validate timeout
-    if timeout_s <= 0:
-        return func.HttpResponse(
-            json.dumps({"error": "`timeout_s` must be > 0."}),
-            status_code=400,
-            mimetype="application/json"
-        )
-    if timeout_s > MAX_TIMEOUT_S:
-        logging.warning(f"Clamping timeout {timeout_s}s → {MAX_TIMEOUT_S}s.")
-        timeout_s = MAX_TIMEOUT_S
-
-    # Validate script size
-    script_bytes = script.encode("utf-8")
-    if len(script_bytes) > MAX_SCRIPT_BYTES:
-        return func.HttpResponse(
-            json.dumps({
-                "error": f"Script too large: {len(script_bytes)} bytes > {MAX_SCRIPT_BYTES} bytes."
-            }),
-            status_code=413,
-            mimetype="application/json"
-        )
-
-    # Write script to a uniquely named temp file
-    unique_id = str(uuid.uuid4())
-    tmp_dir = tempfile.gettempdir()
-    script_path = os.path.join(tmp_dir, f"user_script_{unique_id}.py")
+def _parse_raw_request(req: func.HttpRequest) -> Tuple[str, int] | func.HttpResponse:
+    """Parse raw text request: script in body, timeout in query param."""
     try:
-        with open(script_path, "w", encoding="utf-8") as f:
+        script = req.get_body().decode(ENCODING_UTF8)
+    except Exception:
+        return error_response("Unable to read request body as UTF-8 text.")
+
+    timeout_param = req.params.get("timeout_s")
+    if timeout_param is None:
+        return (script, DEFAULT_TIMEOUT_S)
+
+    try:
+        return (script, int(timeout_param))
+    except ValueError:
+        return error_response("`timeout_s` query parameter must be integer.")
+
+
+def _parse_json_request(req: func.HttpRequest) -> Tuple[str, int] | func.HttpResponse:
+    """Parse JSON request: script and timeout in body."""
+    try:
+        body = req.get_json()
+    except ValueError:
+        return error_response("Request body must be valid JSON.")
+
+    script = body.get("script")
+    if not isinstance(script, str):
+        return error_response("`script` field is required and must be a string.")
+
+    timeout_raw = body.get("timeout_s", DEFAULT_TIMEOUT_S)
+    try:
+        return (script, int(timeout_raw))
+    except (ValueError, TypeError):
+        return error_response("`timeout_s` must be an integer.")
+
+
+def validate_timeout(timeout_s: int) -> int | func.HttpResponse:
+    """Validate and clamp timeout. Returns clamped timeout or error response."""
+    if timeout_s <= 0:
+        return error_response("`timeout_s` must be > 0.")
+
+    if timeout_s > MAX_TIMEOUT_S:
+        logging.warning(f"Clamping timeout {timeout_s}s to {MAX_TIMEOUT_S}s.")
+        return MAX_TIMEOUT_S
+
+    return timeout_s
+
+
+def validate_script_size(script: str) -> Optional[func.HttpResponse]:
+    """Validate script size. Returns None if valid, error response if too large."""
+    script_bytes = len(script.encode(ENCODING_UTF8))
+    if script_bytes > MAX_SCRIPT_BYTES:
+        return error_response(
+            f"Script too large: {script_bytes} bytes > {MAX_SCRIPT_BYTES} bytes.",
+            status_code=413
+        )
+    return None
+
+
+def execute_script(script: str, timeout_s: int) -> ExecutionResult | func.HttpResponse:
+    """Execute script in subprocess. Returns ExecutionResult or error response."""
+    tmp_dir = tempfile.gettempdir()
+    script_path = os.path.join(tmp_dir, f"user_script_{uuid.uuid4()}.py")
+
+    try:
+        with open(script_path, "w", encoding=ENCODING_UTF8) as f:
             f.write(script)
     except Exception as e:
         logging.error(f"Failed to write script to disk: {e}")
-        return func.HttpResponse(
-            json.dumps({"error": "Internal error writing script to disk."}),
-            status_code=500,
-            mimetype="application/json"
-        )
+        return error_response("Internal error writing script to disk.", status_code=500)
 
-    # Prepare subprocess command (use same interpreter)
+    try:
+        return _run_subprocess(script_path, tmp_dir, timeout_s)
+    finally:
+        _cleanup_script(script_path)
+
+
+def _run_subprocess(script_path: str, working_dir: str, timeout_s: int) -> ExecutionResult:
+    """Run Python subprocess and capture output."""
     python_exe = sys.executable or "python3"
     cmd = [python_exe, "-X", "utf8", script_path]
     env = os.environ.copy()
-    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONIOENCODING"] = ENCODING_UTF8
 
-    # Execute script with timeout
     try:
         completed = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=tmp_dir,
+            cwd=working_dir,
             timeout=timeout_s,
             check=False,
-            env=env,              # <— only needed for Option A if you skip -X utf8
+            env=env,
         )
-        exit_code = completed.returncode
-        stdout = completed.stdout.decode("utf-8", errors="replace")
-        stderr = completed.stderr.decode("utf-8", errors="replace")
+        return ExecutionResult(
+            exit_code=completed.returncode,
+            stdout=completed.stdout.decode(ENCODING_UTF8, errors="replace"),
+            stderr=completed.stderr.decode(ENCODING_UTF8, errors="replace"),
+        )
 
     except subprocess.TimeoutExpired as te:
-        exit_code = 124
-        stdout = te.stdout.decode("utf-8", errors="replace") if te.stdout else ""
-        stderr = (te.stderr.decode("utf-8", errors="replace") if te.stderr else "") + "\n[Error: Script timed out]"
+        stdout = te.stdout.decode(ENCODING_UTF8, errors="replace") if te.stdout else ""
+        stderr = te.stderr.decode(ENCODING_UTF8, errors="replace") if te.stderr else ""
+        return ExecutionResult(
+            exit_code=EXIT_CODE_TIMEOUT,
+            stdout=stdout,
+            stderr=stderr + "\n[Error: Script timed out]",
+        )
 
     except Exception as e:
         logging.exception("Unexpected error running user script.")
-        exit_code = -1
-        stdout = ""
-        stderr = f"[Internal execution error] {str(e)}"
+        return ExecutionResult(
+            exit_code=EXIT_CODE_INTERNAL_ERROR,
+            stdout="",
+            stderr=f"[Internal execution error] {e}",
+        )
 
-    finally:
-        # Cleanup
-        try:
-            os.remove(script_path)
-        except Exception:
-            pass
 
-    # Build response
-    result = {
-        "exit_code": exit_code,
-        "stdout": stdout,
-        "stderr": stderr
-    }
+def _cleanup_script(script_path: str) -> None:
+    """Remove temporary script file."""
+    try:
+        os.remove(script_path)
+    except Exception:
+        pass
+
+
+app = func.FunctionApp()
+
+
+@app.function_name(name="RunPythonScript")
+@app.route(route="run", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
+def run_script(req: func.HttpRequest) -> func.HttpResponse:
+    """Execute user-supplied Python code and return exit_code/stdout/stderr."""
+    logging.info("Received request to run python script.")
+
+    parsed = parse_request(req)
+    if isinstance(parsed, func.HttpResponse):
+        return parsed
+    script, timeout_s = parsed
+
+    validated_timeout = validate_timeout(timeout_s)
+    if isinstance(validated_timeout, func.HttpResponse):
+        return validated_timeout
+
+    size_error = validate_script_size(script)
+    if size_error:
+        return size_error
+
+    result = execute_script(script, validated_timeout)
+    if isinstance(result, func.HttpResponse):
+        return result
+
     return func.HttpResponse(
-        json.dumps(result),
+        json.dumps({
+            "exit_code": result.exit_code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }),
         status_code=200,
-        mimetype="application/json"
+        mimetype=CONTENT_TYPE_JSON,
     )
 
