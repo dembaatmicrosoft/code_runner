@@ -22,8 +22,16 @@ from function_app import (
     validate_script_size,
     execute_script,
     _run_subprocess,
-    _cleanup_script,
+    _cleanup_exec_dir,
     ExecutionResult,
+    ContextFile,
+    is_binary_content,
+    decode_file_content,
+    encode_file_content,
+    parse_context,
+    validate_context,
+    materialize_context,
+    collect_artifacts,
     MAX_SCRIPT_BYTES,
     MAX_TIMEOUT_S,
     DEFAULT_TIMEOUT_S,
@@ -32,6 +40,13 @@ from function_app import (
     CONTENT_TYPE_JSON,
     CONTENT_TYPE_TEXT,
     ENCODING_UTF8,
+    ENCODING_BASE64,
+    MAX_CONTEXT_BYTES,
+    MAX_CONTEXT_FILES,
+    MAX_SINGLE_FILE_BYTES,
+    MAX_ARTIFACTS_BYTES,
+    INPUT_DIR,
+    OUTPUT_DIR,
 )
 
 # Get the underlying user function from the Azure Functions decorator
@@ -83,7 +98,7 @@ def test_parse_raw_request_no_timeout():
 
     result = _parse_raw_request(req)
 
-    assert result == ("print('hello')", DEFAULT_TIMEOUT_S)
+    assert result == ("print('hello')", DEFAULT_TIMEOUT_S, {})
 
 
 def test_parse_raw_request_with_valid_timeout():
@@ -94,7 +109,7 @@ def test_parse_raw_request_with_valid_timeout():
 
     result = _parse_raw_request(req)
 
-    assert result == ("print('hello')", 120)
+    assert result == ("print('hello')", 120, {})
 
 
 def test_parse_raw_request_invalid_utf8():
@@ -132,7 +147,7 @@ def test_parse_json_request_script_only():
 
     result = _parse_json_request(req)
 
-    assert result == ("print('hello')", DEFAULT_TIMEOUT_S)
+    assert result == ("print('hello')", DEFAULT_TIMEOUT_S, {})
 
 
 def test_parse_json_request_script_and_timeout():
@@ -142,7 +157,20 @@ def test_parse_json_request_script_and_timeout():
 
     result = _parse_json_request(req)
 
-    assert result == ("print('hello')", 120)
+    assert result == ("print('hello')", 120, {})
+
+
+def test_parse_json_request_with_context():
+    """_parse_json_request() with context returns context dict."""
+    req = Mock(spec=func.HttpRequest)
+    req.get_json.return_value = {
+        "script": "print('hello')",
+        "context": {"data.csv": "a,b\n1,2"}
+    }
+
+    result = _parse_json_request(req)
+
+    assert result == ("print('hello')", DEFAULT_TIMEOUT_S, {"data.csv": "a,b\n1,2"})
 
 
 def test_parse_json_request_invalid_json():
@@ -202,7 +230,7 @@ def test_parse_request_routes_text_plain():
 
     result = parse_request(req)
 
-    assert result == ("print('hello')", DEFAULT_TIMEOUT_S)
+    assert result == ("print('hello')", DEFAULT_TIMEOUT_S, {})
 
 
 def test_parse_request_routes_application_json():
@@ -213,7 +241,7 @@ def test_parse_request_routes_application_json():
 
     result = parse_request(req)
 
-    assert result == ("print('hello')", DEFAULT_TIMEOUT_S)
+    assert result == ("print('hello')", DEFAULT_TIMEOUT_S, {})
 
 
 def test_parse_request_default_to_json():
@@ -224,7 +252,7 @@ def test_parse_request_default_to_json():
 
     result = parse_request(req)
 
-    assert result == ("print('hello')", DEFAULT_TIMEOUT_S)
+    assert result == ("print('hello')", DEFAULT_TIMEOUT_S, {})
 
 
 # ============================================================================
@@ -302,23 +330,28 @@ def test_validate_script_size_exactly_at_limit():
 
 
 # ============================================================================
-# _cleanup_script() tests
+# _cleanup_exec_dir() tests
 # ============================================================================
 
-@patch('function_app.os.remove')
-def test_cleanup_script_success(mock_remove):
-    """_cleanup_script() calls os.remove with script path."""
-    _cleanup_script("/tmp/test_script.py")
+@patch('function_app.shutil.rmtree')
+def test_cleanup_exec_dir_success(mock_rmtree):
+    """_cleanup_exec_dir() calls shutil.rmtree with directory path."""
+    from pathlib import Path
+    exec_dir = Path("/tmp/exec_abc123")
 
-    mock_remove.assert_called_once_with("/tmp/test_script.py")
+    _cleanup_exec_dir(exec_dir)
+
+    mock_rmtree.assert_called_once_with(exec_dir)
 
 
-@patch('function_app.os.remove')
-def test_cleanup_script_swallows_exceptions(mock_remove):
-    """_cleanup_script() does not raise when os.remove fails."""
-    mock_remove.side_effect = OSError("File not found")
+@patch('function_app.shutil.rmtree')
+def test_cleanup_exec_dir_swallows_exceptions(mock_rmtree):
+    """_cleanup_exec_dir() does not raise when shutil.rmtree fails."""
+    from pathlib import Path
+    mock_rmtree.side_effect = OSError("Directory not found")
+    exec_dir = Path("/tmp/exec_abc123")
 
-    _cleanup_script("/tmp/test_script.py")
+    _cleanup_exec_dir(exec_dir)
 
     # No exception should be raised
 
@@ -418,70 +451,77 @@ def test_run_subprocess_timeout_parameter(mock_run):
 # execute_script() tests
 # ============================================================================
 
-@patch('function_app._cleanup_script')
+@patch('function_app._cleanup_exec_dir')
+@patch('function_app.collect_artifacts')
 @patch('function_app._run_subprocess')
 @patch('function_app.uuid.uuid4')
-@patch('function_app.open', new_callable=mock_open)
 @patch('function_app.tempfile.gettempdir')
-def test_execute_script_writes_to_temp_file(mock_gettempdir, mock_file, mock_uuid, mock_run, mock_cleanup):
-    """execute_script() writes script to temporary file."""
-    mock_gettempdir.return_value = "/tmp"
-    mock_uuid.return_value = Mock(hex="abc123")
+def test_execute_script_creates_exec_dir(mock_gettempdir, mock_uuid, mock_run, mock_collect, mock_cleanup):
+    """execute_script() creates execution directory."""
+    import tempfile
+    mock_gettempdir.return_value = tempfile.gettempdir()
+    mock_uuid.return_value = "test-uuid-123"
     mock_run.return_value = ExecutionResult(0, "", "")
-
-    execute_script("print('hello')", 60)
-
-    mock_file.assert_called_once()
-    handle = mock_file()
-    handle.write.assert_called_once_with("print('hello')")
-
-
-@patch('function_app._cleanup_script')
-@patch('function_app._run_subprocess')
-@patch('function_app.uuid.uuid4')
-@patch('function_app.open', new_callable=mock_open)
-@patch('function_app.tempfile.gettempdir')
-def test_execute_script_calls_run_subprocess(mock_gettempdir, mock_file, mock_uuid, mock_run, mock_cleanup):
-    """execute_script() invokes _run_subprocess with correct arguments."""
-    mock_gettempdir.return_value = "/tmp"
-    mock_uuid.return_value = "abc123"
-    mock_run.return_value = ExecutionResult(0, "", "")
+    mock_collect.return_value = {}
 
     execute_script("print('hello')", 60)
 
     assert mock_run.called
     call_args = mock_run.call_args[0]
-    assert call_args[0].startswith("/tmp/user_script_")
-    assert call_args[1] == "/tmp"
+    assert "exec_test-uuid-123" in call_args[1]
+
+
+@patch('function_app._cleanup_exec_dir')
+@patch('function_app.collect_artifacts')
+@patch('function_app._run_subprocess')
+@patch('function_app.uuid.uuid4')
+@patch('function_app.tempfile.gettempdir')
+def test_execute_script_calls_run_subprocess(mock_gettempdir, mock_uuid, mock_run, mock_collect, mock_cleanup):
+    """execute_script() invokes _run_subprocess with correct arguments."""
+    import tempfile
+    mock_gettempdir.return_value = tempfile.gettempdir()
+    mock_uuid.return_value = "abc123"
+    mock_run.return_value = ExecutionResult(0, "", "")
+    mock_collect.return_value = {}
+
+    execute_script("print('hello')", 60)
+
+    assert mock_run.called
+    call_args = mock_run.call_args[0]
+    assert "script_abc123.py" in call_args[0]
     assert call_args[2] == 60
 
 
-@patch('function_app._cleanup_script')
+@patch('function_app._cleanup_exec_dir')
+@patch('function_app.collect_artifacts')
 @patch('function_app._run_subprocess')
 @patch('function_app.uuid.uuid4')
-@patch('function_app.open', new_callable=mock_open)
 @patch('function_app.tempfile.gettempdir')
-def test_execute_script_cleans_up_on_success(mock_gettempdir, mock_file, mock_uuid, mock_run, mock_cleanup):
-    """execute_script() cleans up temporary file after successful execution."""
-    mock_gettempdir.return_value = "/tmp"
+def test_execute_script_cleans_up_on_success(mock_gettempdir, mock_uuid, mock_run, mock_collect, mock_cleanup):
+    """execute_script() cleans up execution directory after successful execution."""
+    import tempfile
+    mock_gettempdir.return_value = tempfile.gettempdir()
     mock_uuid.return_value = "abc123"
     mock_run.return_value = ExecutionResult(0, "", "")
+    mock_collect.return_value = {}
 
     execute_script("print('hello')", 60)
 
     assert mock_cleanup.called
 
 
-@patch('function_app._cleanup_script')
+@patch('function_app._cleanup_exec_dir')
+@patch('function_app.collect_artifacts')
 @patch('function_app._run_subprocess')
 @patch('function_app.uuid.uuid4')
-@patch('function_app.open', new_callable=mock_open)
 @patch('function_app.tempfile.gettempdir')
-def test_execute_script_cleans_up_on_failure(mock_gettempdir, mock_file, mock_uuid, mock_run, mock_cleanup):
-    """execute_script() cleans up temporary file even when execution fails."""
-    mock_gettempdir.return_value = "/tmp"
+def test_execute_script_cleans_up_on_failure(mock_gettempdir, mock_uuid, mock_run, mock_collect, mock_cleanup):
+    """execute_script() cleans up execution directory even when execution fails."""
+    import tempfile
+    mock_gettempdir.return_value = tempfile.gettempdir()
     mock_uuid.return_value = "abc123"
     mock_run.side_effect = RuntimeError("Test error")
+    mock_collect.return_value = {}
 
     try:
         execute_script("print('hello')", 60)
@@ -491,36 +531,24 @@ def test_execute_script_cleans_up_on_failure(mock_gettempdir, mock_file, mock_uu
     assert mock_cleanup.called
 
 
-@patch('function_app.uuid.uuid4')
-@patch('function_app.open', new_callable=mock_open)
-@patch('function_app.tempfile.gettempdir')
-def test_execute_script_file_write_error(mock_gettempdir, mock_file, mock_uuid):
-    """execute_script() returns 500 error when file write fails."""
-    mock_gettempdir.return_value = "/tmp"
-    mock_uuid.return_value = "abc123"
-    mock_file.side_effect = OSError("Disk full")
-
-    result = execute_script("print('hello')", 60)
-
-    assert isinstance(result, func.HttpResponse)
-    assert result.status_code == 500
-
-
-@patch('function_app._cleanup_script')
+@patch('function_app._cleanup_exec_dir')
+@patch('function_app.collect_artifacts')
 @patch('function_app._run_subprocess')
 @patch('function_app.uuid.uuid4')
-@patch('function_app.open', new_callable=mock_open)
 @patch('function_app.tempfile.gettempdir')
-def test_execute_script_returns_execution_result(mock_gettempdir, mock_file, mock_uuid, mock_run, mock_cleanup):
-    """execute_script() returns ExecutionResult from _run_subprocess."""
-    mock_gettempdir.return_value = "/tmp"
+def test_execute_script_returns_execution_result_with_artifacts(mock_gettempdir, mock_uuid, mock_run, mock_collect, mock_cleanup):
+    """execute_script() returns ExecutionResult with artifacts."""
+    import tempfile
+    mock_gettempdir.return_value = tempfile.gettempdir()
     mock_uuid.return_value = "abc123"
-    expected_result = ExecutionResult(0, "output", "")
-    mock_run.return_value = expected_result
+    mock_run.return_value = ExecutionResult(0, "output", "")
+    mock_collect.return_value = {"result.txt": "data"}
 
     result = execute_script("print('hello')", 60)
 
-    assert result == expected_result
+    assert result.exit_code == 0
+    assert result.stdout == "output"
+    assert result.artifacts == {"result.txt": "data"}
 
 
 # ============================================================================
@@ -533,7 +561,7 @@ def test_run_script_success_flow(mock_execute):
     req = Mock(spec=func.HttpRequest)
     req.headers.get.return_value = CONTENT_TYPE_JSON
     req.get_json.return_value = {"script": "print('hello')"}
-    mock_execute.return_value = ExecutionResult(0, "hello\n", "")
+    mock_execute.return_value = ExecutionResult(0, "hello\n", "", {})
 
     response = run_script(req)
 
@@ -541,6 +569,7 @@ def test_run_script_success_flow(mock_execute):
     body = json.loads(response.get_body().decode(ENCODING_UTF8))
     assert body["exit_code"] == 0
     assert body["stdout"] == "hello\n"
+    assert body["artifacts"] == {}
 
 
 @patch('function_app.execute_script')
@@ -602,7 +631,7 @@ def test_run_script_timeout_clamps(mock_execute):
     req = Mock(spec=func.HttpRequest)
     req.headers.get.return_value = CONTENT_TYPE_JSON
     req.get_json.return_value = {"script": "print('hello')", "timeout_s": 500}
-    mock_execute.return_value = ExecutionResult(0, "hello\n", "")
+    mock_execute.return_value = ExecutionResult(0, "hello\n", "", {})
 
     response = run_script(req)
 
@@ -617,7 +646,7 @@ def test_run_script_response_structure(mock_execute):
     req = Mock(spec=func.HttpRequest)
     req.headers.get.return_value = CONTENT_TYPE_JSON
     req.get_json.return_value = {"script": "print('hello')"}
-    mock_execute.return_value = ExecutionResult(42, "out", "err")
+    mock_execute.return_value = ExecutionResult(42, "out", "err", {"result.txt": "data"})
 
     response = run_script(req)
     body = json.loads(response.get_body().decode(ENCODING_UTF8))
@@ -625,9 +654,11 @@ def test_run_script_response_structure(mock_execute):
     assert "exit_code" in body
     assert "stdout" in body
     assert "stderr" in body
+    assert "artifacts" in body
     assert body["exit_code"] == 42
     assert body["stdout"] == "out"
     assert body["stderr"] == "err"
+    assert body["artifacts"] == {"result.txt": "data"}
 
 
 @patch('function_app.execute_script')
@@ -636,8 +667,539 @@ def test_run_script_content_type(mock_execute):
     req = Mock(spec=func.HttpRequest)
     req.headers.get.return_value = CONTENT_TYPE_JSON
     req.get_json.return_value = {"script": "print('hello')"}
-    mock_execute.return_value = ExecutionResult(0, "", "")
+    mock_execute.return_value = ExecutionResult(0, "", "", {})
 
     response = run_script(req)
 
     assert response.mimetype == CONTENT_TYPE_JSON
+
+
+# ============================================================================
+# is_binary_content() tests
+# ============================================================================
+
+def test_is_binary_content_with_null_bytes():
+    """is_binary_content() returns True for data with null bytes."""
+    data = b"hello\x00world"
+
+    result = is_binary_content(data)
+
+    assert result is True
+
+
+def test_is_binary_content_with_valid_utf8():
+    """is_binary_content() returns False for valid UTF-8 text."""
+    data = b"Hello, World!"
+
+    result = is_binary_content(data)
+
+    assert result is False
+
+
+def test_is_binary_content_with_unicode():
+    """is_binary_content() returns False for valid UTF-8 unicode."""
+    data = "こんにちは".encode(ENCODING_UTF8)
+
+    result = is_binary_content(data)
+
+    assert result is False
+
+
+def test_is_binary_content_with_invalid_utf8():
+    """is_binary_content() returns True for invalid UTF-8 bytes."""
+    data = b"\xff\xfe\x00\x01"
+
+    result = is_binary_content(data)
+
+    assert result is True
+
+
+def test_is_binary_content_with_empty():
+    """is_binary_content() returns False for empty bytes."""
+    data = b""
+
+    result = is_binary_content(data)
+
+    assert result is False
+
+
+# ============================================================================
+# decode_file_content() tests
+# ============================================================================
+
+def test_decode_file_content_utf8():
+    """decode_file_content() decodes UTF-8 content."""
+    ctx_file = ContextFile(name="test.txt", content="Hello", encoding=ENCODING_UTF8)
+
+    result = decode_file_content(ctx_file)
+
+    assert result == b"Hello"
+
+
+def test_decode_file_content_base64():
+    """decode_file_content() decodes base64 content."""
+    import base64
+    original = b"binary data"
+    encoded = base64.b64encode(original).decode("ascii")
+    ctx_file = ContextFile(name="test.bin", content=encoded, encoding=ENCODING_BASE64)
+
+    result = decode_file_content(ctx_file)
+
+    assert result == original
+
+
+def test_decode_file_content_utf8_unicode():
+    """decode_file_content() handles unicode in UTF-8."""
+    ctx_file = ContextFile(name="test.txt", content="こんにちは", encoding=ENCODING_UTF8)
+
+    result = decode_file_content(ctx_file)
+
+    assert result == "こんにちは".encode(ENCODING_UTF8)
+
+
+# ============================================================================
+# encode_file_content() tests
+# ============================================================================
+
+def test_encode_file_content_text():
+    """encode_file_content() returns string for text content."""
+    data = b"Hello, World!"
+
+    result = encode_file_content(data)
+
+    assert result == "Hello, World!"
+
+
+def test_encode_file_content_binary():
+    """encode_file_content() returns dict for binary content."""
+    import base64
+    data = b"\x00\x01\x02\x03"
+
+    result = encode_file_content(data)
+
+    assert isinstance(result, dict)
+    assert result["encoding"] == ENCODING_BASE64
+    assert result["content"] == base64.b64encode(data).decode("ascii")
+
+
+def test_encode_file_content_unicode():
+    """encode_file_content() returns string for unicode text."""
+    data = "こんにちは".encode(ENCODING_UTF8)
+
+    result = encode_file_content(data)
+
+    assert result == "こんにちは"
+
+
+# ============================================================================
+# parse_context() tests
+# ============================================================================
+
+def test_parse_context_string_value():
+    """parse_context() creates ContextFile from string value."""
+    raw = {"data.csv": "a,b\n1,2"}
+
+    result = parse_context(raw)
+
+    assert isinstance(result, dict)
+    assert "data.csv" in result
+    assert result["data.csv"].name == "data.csv"
+    assert result["data.csv"].content == "a,b\n1,2"
+    assert result["data.csv"].encoding == ENCODING_UTF8
+
+
+def test_parse_context_object_value_utf8():
+    """parse_context() creates ContextFile from object with UTF-8 encoding."""
+    raw = {"data.csv": {"content": "a,b\n1,2", "encoding": "utf-8"}}
+
+    result = parse_context(raw)
+
+    assert result["data.csv"].content == "a,b\n1,2"
+    assert result["data.csv"].encoding == ENCODING_UTF8
+
+
+def test_parse_context_object_value_base64():
+    """parse_context() creates ContextFile from object with base64 encoding."""
+    raw = {"image.png": {"content": "iVBORw0KGgo=", "encoding": "base64"}}
+
+    result = parse_context(raw)
+
+    assert result["image.png"].content == "iVBORw0KGgo="
+    assert result["image.png"].encoding == ENCODING_BASE64
+
+
+def test_parse_context_multiple_files():
+    """parse_context() handles multiple files."""
+    raw = {
+        "data.csv": "a,b",
+        "config.json": {"content": "{}", "encoding": "utf-8"}
+    }
+
+    result = parse_context(raw)
+
+    assert len(result) == 2
+    assert "data.csv" in result
+    assert "config.json" in result
+
+
+def test_parse_context_not_dict_error():
+    """parse_context() returns error for non-dict context."""
+    result = parse_context(["not", "a", "dict"])
+
+    assert isinstance(result, func.HttpResponse)
+    assert result.status_code == 400
+
+
+def test_parse_context_invalid_encoding_error():
+    """parse_context() returns error for invalid encoding."""
+    raw = {"data.csv": {"content": "data", "encoding": "invalid"}}
+
+    result = parse_context(raw)
+
+    assert isinstance(result, func.HttpResponse)
+    assert result.status_code == 400
+
+
+def test_parse_context_missing_content_error():
+    """parse_context() returns error when content is missing."""
+    raw = {"data.csv": {"encoding": "utf-8"}}
+
+    result = parse_context(raw)
+
+    assert isinstance(result, func.HttpResponse)
+    assert result.status_code == 400
+
+
+def test_parse_context_non_string_content_error():
+    """parse_context() returns error for non-string content."""
+    raw = {"data.csv": {"content": 123, "encoding": "utf-8"}}
+
+    result = parse_context(raw)
+
+    assert isinstance(result, func.HttpResponse)
+    assert result.status_code == 400
+
+
+# ============================================================================
+# validate_context() tests
+# ============================================================================
+
+def test_validate_context_valid():
+    """validate_context() returns None for valid context."""
+    context = {
+        "data.csv": ContextFile(name="data.csv", content="a,b", encoding=ENCODING_UTF8)
+    }
+
+    result = validate_context(context)
+
+    assert result is None
+
+
+def test_validate_context_too_many_files():
+    """validate_context() returns error when exceeding file count limit."""
+    context = {
+        f"file{i}.txt": ContextFile(name=f"file{i}.txt", content="data", encoding=ENCODING_UTF8)
+        for i in range(MAX_CONTEXT_FILES + 1)
+    }
+
+    result = validate_context(context)
+
+    assert isinstance(result, func.HttpResponse)
+    assert result.status_code == 400
+
+
+def test_validate_context_path_traversal_slash():
+    """validate_context() returns error for filename with forward slash."""
+    context = {
+        "../secret.txt": ContextFile(name="../secret.txt", content="data", encoding=ENCODING_UTF8)
+    }
+
+    result = validate_context(context)
+
+    assert isinstance(result, func.HttpResponse)
+    assert result.status_code == 400
+
+
+def test_validate_context_path_traversal_backslash():
+    """validate_context() returns error for filename with backslash."""
+    context = {
+        "..\\secret.txt": ContextFile(name="..\\secret.txt", content="data", encoding=ENCODING_UTF8)
+    }
+
+    result = validate_context(context)
+
+    assert isinstance(result, func.HttpResponse)
+    assert result.status_code == 400
+
+
+def test_validate_context_leading_dot():
+    """validate_context() returns error for filename starting with dot."""
+    context = {
+        ".hidden": ContextFile(name=".hidden", content="data", encoding=ENCODING_UTF8)
+    }
+
+    result = validate_context(context)
+
+    assert isinstance(result, func.HttpResponse)
+    assert result.status_code == 400
+
+
+def test_validate_context_single_file_too_large():
+    """validate_context() returns 413 error for file exceeding size limit."""
+    large_content = "x" * (MAX_SINGLE_FILE_BYTES + 1)
+    context = {
+        "large.txt": ContextFile(name="large.txt", content=large_content, encoding=ENCODING_UTF8)
+    }
+
+    result = validate_context(context)
+
+    assert isinstance(result, func.HttpResponse)
+    assert result.status_code == 413
+
+
+def test_validate_context_total_too_large():
+    """validate_context() returns 413 error when total size exceeds limit."""
+    # Create multiple files that together exceed the limit
+    file_size = MAX_CONTEXT_BYTES // 3
+    content = "x" * file_size
+    context = {
+        f"file{i}.txt": ContextFile(name=f"file{i}.txt", content=content, encoding=ENCODING_UTF8)
+        for i in range(4)
+    }
+
+    result = validate_context(context)
+
+    assert isinstance(result, func.HttpResponse)
+    assert result.status_code == 413
+
+
+def test_validate_context_invalid_base64():
+    """validate_context() returns error for invalid base64 content."""
+    context = {
+        "image.png": ContextFile(name="image.png", content="not-valid-base64!!!", encoding=ENCODING_BASE64)
+    }
+
+    result = validate_context(context)
+
+    assert isinstance(result, func.HttpResponse)
+    assert result.status_code == 400
+
+
+# ============================================================================
+# materialize_context() tests
+# ============================================================================
+
+def test_materialize_context_creates_directories():
+    """materialize_context() creates input and output directories."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exec_dir = Path(tmpdir)
+        context = {}
+
+        materialize_context(context, exec_dir)
+
+        assert (exec_dir / INPUT_DIR).exists()
+        assert (exec_dir / OUTPUT_DIR).exists()
+
+
+def test_materialize_context_writes_files():
+    """materialize_context() writes context files to input directory."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exec_dir = Path(tmpdir)
+        context = {
+            "data.csv": ContextFile(name="data.csv", content="a,b\n1,2", encoding=ENCODING_UTF8)
+        }
+
+        materialize_context(context, exec_dir)
+
+        input_file = exec_dir / INPUT_DIR / "data.csv"
+        assert input_file.exists()
+        assert input_file.read_text() == "a,b\n1,2"
+
+
+def test_materialize_context_writes_binary():
+    """materialize_context() writes binary files correctly."""
+    import tempfile
+    import base64
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exec_dir = Path(tmpdir)
+        binary_data = b"\x00\x01\x02\x03"
+        encoded = base64.b64encode(binary_data).decode("ascii")
+        context = {
+            "data.bin": ContextFile(name="data.bin", content=encoded, encoding=ENCODING_BASE64)
+        }
+
+        materialize_context(context, exec_dir)
+
+        input_file = exec_dir / INPUT_DIR / "data.bin"
+        assert input_file.exists()
+        assert input_file.read_bytes() == binary_data
+
+
+# ============================================================================
+# collect_artifacts() tests
+# ============================================================================
+
+def test_collect_artifacts_empty_output():
+    """collect_artifacts() returns empty dict when output dir is empty."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exec_dir = Path(tmpdir)
+        (exec_dir / OUTPUT_DIR).mkdir()
+
+        result = collect_artifacts(exec_dir)
+
+        assert result == {}
+
+
+def test_collect_artifacts_no_output_dir():
+    """collect_artifacts() returns empty dict when output dir doesn't exist."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exec_dir = Path(tmpdir)
+
+        result = collect_artifacts(exec_dir)
+
+        assert result == {}
+
+
+def test_collect_artifacts_text_file():
+    """collect_artifacts() collects text files as strings."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exec_dir = Path(tmpdir)
+        output_dir = exec_dir / OUTPUT_DIR
+        output_dir.mkdir()
+        (output_dir / "result.txt").write_text("output data")
+
+        result = collect_artifacts(exec_dir)
+
+        assert result == {"result.txt": "output data"}
+
+
+def test_collect_artifacts_binary_file():
+    """collect_artifacts() collects binary files with base64 encoding."""
+    import tempfile
+    import base64
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exec_dir = Path(tmpdir)
+        output_dir = exec_dir / OUTPUT_DIR
+        output_dir.mkdir()
+        binary_data = b"\x00\x01\x02\x03"
+        (output_dir / "data.bin").write_bytes(binary_data)
+
+        result = collect_artifacts(exec_dir)
+
+        assert "data.bin" in result
+        assert isinstance(result["data.bin"], dict)
+        assert result["data.bin"]["encoding"] == ENCODING_BASE64
+        assert result["data.bin"]["content"] == base64.b64encode(binary_data).decode("ascii")
+
+
+def test_collect_artifacts_multiple_files():
+    """collect_artifacts() collects multiple files."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exec_dir = Path(tmpdir)
+        output_dir = exec_dir / OUTPUT_DIR
+        output_dir.mkdir()
+        (output_dir / "result.txt").write_text("text data")
+        (output_dir / "result.csv").write_text("a,b\n1,2")
+
+        result = collect_artifacts(exec_dir)
+
+        assert len(result) == 2
+        assert result["result.txt"] == "text data"
+        assert result["result.csv"] == "a,b\n1,2"
+
+
+def test_collect_artifacts_too_large():
+    """collect_artifacts() returns 500 error when artifacts exceed size limit."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exec_dir = Path(tmpdir)
+        output_dir = exec_dir / OUTPUT_DIR
+        output_dir.mkdir()
+        # Write a file larger than the limit
+        large_data = "x" * (MAX_ARTIFACTS_BYTES + 1)
+        (output_dir / "large.txt").write_text(large_data)
+
+        result = collect_artifacts(exec_dir)
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 500
+
+
+def test_collect_artifacts_skips_directories():
+    """collect_artifacts() skips subdirectories in output."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exec_dir = Path(tmpdir)
+        output_dir = exec_dir / OUTPUT_DIR
+        output_dir.mkdir()
+        (output_dir / "result.txt").write_text("data")
+        (output_dir / "subdir").mkdir()
+
+        result = collect_artifacts(exec_dir)
+
+        assert result == {"result.txt": "data"}
+
+
+# ============================================================================
+# run_script() integration tests with context
+# ============================================================================
+
+@patch('function_app.execute_script')
+def test_run_script_with_context(mock_execute):
+    """run_script() passes parsed context to execute_script."""
+    req = Mock(spec=func.HttpRequest)
+    req.headers.get.return_value = CONTENT_TYPE_JSON
+    req.get_json.return_value = {
+        "script": "print('hello')",
+        "context": {"data.csv": "a,b\n1,2"}
+    }
+    mock_execute.return_value = ExecutionResult(0, "hello\n", "", {})
+
+    run_script(req)
+
+    call_args = mock_execute.call_args
+    context_arg = call_args[0][2]
+    assert "data.csv" in context_arg
+    assert context_arg["data.csv"].content == "a,b\n1,2"
+
+
+@patch('function_app.execute_script')
+def test_run_script_context_validation_error(mock_execute):
+    """run_script() returns error when context validation fails."""
+    req = Mock(spec=func.HttpRequest)
+    req.headers.get.return_value = CONTENT_TYPE_JSON
+    req.get_json.return_value = {
+        "script": "print('hello')",
+        "context": {"../evil.txt": "data"}
+    }
+
+    response = run_script(req)
+
+    assert response.status_code == 400
+    assert not mock_execute.called

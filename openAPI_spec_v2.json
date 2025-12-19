@@ -2,8 +2,8 @@
   "swagger": "2.0",
   "info": {
     "title": "CodeRunner API",
-    "description": "Single endpoint to run Python scripts in a sandboxed subprocess.\n\nSupports two modes:\n• JSON mode: POST application/json with { script, timeout_s }.\n• Raw mode: POST text/plain (body = script), with timeout_s query-param.\n\nLimits:\n– script ≤ 256 KiB (UTF-8 bytes)\n– timeout_s ≤ 300 s (clamped)\n– OOM kills at ~1.5 GB\n– Runs inside Function host sandbox, not fully container-isolated.\n\nSuitable for development/testing; do not use with untrusted code in production.",
-    "version": "1.0.0",
+    "description": "Single endpoint to run Python scripts in a sandboxed subprocess.\n\nSupports two modes:\n- JSON mode: POST application/json with { script, timeout_s, context }.\n- Raw mode: POST text/plain (body = script), with timeout_s query-param (no context support).\n\nContext & Artifacts:\n- Scripts can read input files from ./input/ directory (provided via 'context')\n- Scripts can write output files to ./output/ directory (returned as 'artifacts')\n- Binary files use base64 encoding (auto-detected)\n\nLimits:\n- script: 256 KiB (UTF-8 bytes)\n- timeout_s: 300 s max (clamped)\n- context: 10 MB total, 5 MB per file, 20 files max\n- artifacts: 10 MB total\n- OOM kills at ~1.5 GB\n\nRuns inside Function host sandbox, not fully container-isolated. Suitable for development/testing; do not use with untrusted code in production.",
+    "version": "2.0.0",
     "contact": {
       "name": "Developer Support",
       "url": "https://github.com/dembaatmicrosoft/code_runner/issues"
@@ -29,8 +29,9 @@
     "/run": {
       "post": {
         "summary": "Execute a Python script",
-        "description": "Runs the provided Python code and returns exit_code, stdout, stderr.\n\nTwo content-type modes supported:\n1) JSON mode (Content-Type: application/json): Send JSON object with 'script' property and optional 'timeout_s'\n2) Raw mode (Content-Type: text/plain): Send raw script as body text; 'timeout_s' via query parameter\n\nNote: In JSON mode, the 'script' property is required. In raw mode, the entire body is treated as the script.",
-        "operationId": "runPythonScript",        "parameters": [
+        "description": "Runs the provided Python code and returns exit_code, stdout, stderr, and artifacts.\n\nTwo content-type modes supported:\n1) JSON mode (Content-Type: application/json): Send JSON object with 'script', optional 'timeout_s', and optional 'context'\n2) Raw mode (Content-Type: text/plain): Send raw script as body text; 'timeout_s' via query parameter (no context support)\n\nContext files are written to ./input/ before execution. Output files written to ./output/ are returned as artifacts.",
+        "operationId": "runPythonScript",
+        "parameters": [
           {
             "name": "timeout_s",
             "in": "query",
@@ -43,7 +44,7 @@
           {
             "name": "body",
             "in": "body",
-            "description": "Request body. For application/json: JSON object with script and optional timeout_s. For text/plain: raw Python script text.",
+            "description": "Request body. For application/json: JSON object with script, optional timeout_s, and optional context. For text/plain: raw Python script text.",
             "required": true,
             "schema": {
               "$ref": "#/definitions/RunRequest"
@@ -60,65 +61,100 @@
               "application/json": {
                 "exit_code": 0,
                 "stdout": "Hello, world!\n",
-                "stderr": ""
+                "stderr": "",
+                "artifacts": {}
               }
             }
           },
           "400": {
-            "description": "Bad Request – invalid JSON or missing fields",
+            "description": "Bad Request - invalid JSON, missing fields, invalid context filename, or invalid base64 encoding",
             "schema": {
               "$ref": "#/definitions/ErrorResponse"
             },
             "examples": {
               "application/json": {
-                "error": "Request body must be valid JSON."
+                "error": "Invalid context filename: '../secret.txt'"
               }
             }
           },
           "413": {
-            "description": "Payload Too Large – script > 256 KiB",
+            "description": "Payload Too Large - script > 256 KiB, context file > 5 MB, or total context > 10 MB",
             "schema": {
               "$ref": "#/definitions/ErrorResponse"
             },
             "examples": {
               "application/json": {
-                "error": "Script too large: 300000 bytes > 262144 bytes."
+                "error": "Context file 'data.csv' too large: 6000000 > 5242880 bytes."
               }
             }
           },
           "500": {
-            "description": "Internal Server Error",
+            "description": "Internal Server Error - includes artifacts too large (> 10 MB)",
             "schema": {
               "$ref": "#/definitions/ErrorResponse"
             },
             "examples": {
               "application/json": {
-                "error": "Internal error writing script to disk."
+                "error": "Total artifacts too large: exceeds 10485760 bytes."
               }
             }
           }
         }
       }
     }
-  },  "definitions": {
+  },
+  "definitions": {
     "RunRequest": {
       "type": "object",
-      "description": "Request body for executing Python code. For JSON requests: use 'script' property and optionally 'timeout_s'. For text/plain requests: the entire body is treated as the script text, and 'timeout_s' must be provided via query parameter.",
+      "description": "Request body for executing Python code.",
+      "required": ["script"],
       "properties": {
         "script": {
           "type": "string",
-          "description": "The Python code to execute (≤ 256 KiB). Required for JSON requests, ignored for text/plain requests."
+          "description": "The Python code to execute (max 256 KiB UTF-8)."
+        },
+        "timeout_s": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Max seconds to allow script to run. Default: 60, max: 300.",
+          "default": 60
+        },
+        "context": {
+          "type": "object",
+          "description": "Input files to provide to the script. Keys are filenames, values are file contents. Files are written to ./input/ before execution.",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "UTF-8 text content"
+              },
+              {
+                "$ref": "#/definitions/ContextFile"
+              }
+            ]
+          }
         }
-      },
-      "additionalProperties": false
+      }
+    },
+    "ContextFile": {
+      "type": "object",
+      "description": "A context file with explicit encoding.",
+      "required": ["content", "encoding"],
+      "properties": {
+        "content": {
+          "type": "string",
+          "description": "File content (text or base64-encoded binary)"
+        },
+        "encoding": {
+          "type": "string",
+          "enum": ["utf-8", "base64"],
+          "description": "Content encoding: 'utf-8' for text, 'base64' for binary"
+        }
+      }
     },
     "RunResponse": {
       "type": "object",
-      "required": [
-        "exit_code",
-        "stdout",
-        "stderr"
-      ],
+      "required": ["exit_code", "stdout", "stderr", "artifacts"],
       "properties": {
         "exit_code": {
           "type": "integer",
@@ -132,23 +168,49 @@
         "stderr": {
           "type": "string",
           "description": "Captured standard error (and any timeout/internal-error notes)."
+        },
+        "artifacts": {
+          "type": "object",
+          "description": "Output files produced by the script. Keys are filenames, values are file contents. Files are read from ./output/ after execution.",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "UTF-8 text content (auto-detected)"
+              },
+              {
+                "$ref": "#/definitions/ArtifactFile"
+              }
+            ]
+          }
         }
-      },
-      "additionalProperties": false
+      }
+    },
+    "ArtifactFile": {
+      "type": "object",
+      "description": "A binary artifact file with base64 encoding.",
+      "required": ["content", "encoding"],
+      "properties": {
+        "content": {
+          "type": "string",
+          "description": "Base64-encoded binary content"
+        },
+        "encoding": {
+          "type": "string",
+          "enum": ["base64"],
+          "description": "Always 'base64' for binary files"
+        }
+      }
     },
     "ErrorResponse": {
       "type": "object",
-      "required": [
-        "error"
-      ],
+      "required": ["error"],
       "properties": {
         "error": {
           "type": "string",
           "description": "Human-readable error message."
         }
-      },
-      "additionalProperties": false
+      }
     }
   }
 }
-
