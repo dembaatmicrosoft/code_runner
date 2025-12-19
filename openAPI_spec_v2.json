@@ -6,15 +6,14 @@
     "version": "1.0.0",
     "contact": {
       "name": "Developer Support",
-      "url": "https://github.com/your-org/CodeRunner/issues",
-      "email": "support@yourdomain.com"
+      "url": "https://github.com/dembaatmicrosoft/code_runner/issues"
     },
     "license": {
       "name": "MIT",
       "url": "https://opensource.org/licenses/MIT"
     }
   },
-  "host": "coderunner.azurewebsites.net",
+  "host": "coderunner-fn.azurewebsites.net",
   "basePath": "/api",
   "schemes": [
     "https"
@@ -72,8 +71,7 @@
             },
             "examples": {
               "application/json": {
-                "code": 400,
-                "message": "Request body must be valid JSON."
+                "error": "Request body must be valid JSON."
               }
             }
           },
@@ -84,8 +82,7 @@
             },
             "examples": {
               "application/json": {
-                "code": 413,
-                "message": "Script too large: 300000 bytes > 262144 bytes."
+                "error": "Script too large: 300000 bytes > 262144 bytes."
               }
             }
           },
@@ -96,8 +93,7 @@
             },
             "examples": {
               "application/json": {
-                "code": 500,
-                "message": "Internal error writing script to disk."
+                "error": "Internal error writing script to disk."
               }
             }
           }
@@ -143,16 +139,10 @@
     "ErrorResponse": {
       "type": "object",
       "required": [
-        "code",
-        "message"
+        "error"
       ],
       "properties": {
-        "code": {
-          "type": "integer",
-          "format": "int32",
-          "description": "HTTP status code (e.g. 400, 413, 500)."
-        },
-        "message": {
+        "error": {
           "type": "string",
           "description": "Human-readable error message."
         }
