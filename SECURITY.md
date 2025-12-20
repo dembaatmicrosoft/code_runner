@@ -38,6 +38,9 @@ The following security measures are implemented:
 | Measure | Description |
 |---------|-------------|
 | **Authentication** | Function-level key required for access (not anonymous) |
+| **Sequential execution** | Only one script runs at a time per instance (prevents interference) |
+| **Process group isolation** | Each script runs in its own process group for clean termination |
+| **Process tree cleanup** | All child processes are killed on timeout or completion |
 | **Audit logging** | Structured JSON logging with request ID, client IP, script hash, and execution metrics |
 | **Environment sanitization** | Subprocess receives minimal safe environment (no secrets exposed) |
 | **Timeout enforcement** | Scripts are terminated after the configured timeout (max 300s) |

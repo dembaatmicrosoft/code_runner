@@ -31,11 +31,18 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
+
+
+# Execution lock - ensures sequential processing within a single instance
+# This prevents concurrent scripts from interfering with each other
+_execution_lock = threading.Lock()
 
 
 # Script and timeout constants
@@ -428,36 +435,53 @@ def _create_safe_environment() -> dict:
     return safe_env
 
 
+def _kill_process_tree(pid: int) -> None:
+    """Kill a process and all its children using process group."""
+    try:
+        # Kill the entire process group
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        # Process already dead or we don't have permission
+        pass
+    except Exception as e:
+        logging.warning(f"Failed to kill process tree {pid}: {e}")
+
+
 def _run_subprocess(script_path: str, working_dir: str, timeout_s: int) -> ExecutionResult:
-    """Run Python subprocess and capture output."""
+    """Run Python subprocess and capture output with process group isolation."""
     python_exe = sys.executable or "python3"
     cmd = [python_exe, "-X", "utf8", script_path]
     env = _create_safe_environment()
 
+    process = None
     try:
-        completed = subprocess.run(
+        # Start process in new process group for clean termination
+        process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=working_dir,
-            timeout=timeout_s,
-            check=False,
             env=env,
-        )
-        return ExecutionResult(
-            exit_code=completed.returncode,
-            stdout=completed.stdout.decode(ENCODING_UTF8, errors="replace"),
-            stderr=completed.stderr.decode(ENCODING_UTF8, errors="replace"),
+            start_new_session=True,  # Creates new process group
         )
 
-    except subprocess.TimeoutExpired as te:
-        stdout = te.stdout.decode(ENCODING_UTF8, errors="replace") if te.stdout else ""
-        stderr = te.stderr.decode(ENCODING_UTF8, errors="replace") if te.stderr else ""
-        return ExecutionResult(
-            exit_code=EXIT_CODE_TIMEOUT,
-            stdout=stdout,
-            stderr=stderr + "\n[Error: Script timed out]",
-        )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_s)
+            return ExecutionResult(
+                exit_code=process.returncode,
+                stdout=stdout.decode(ENCODING_UTF8, errors="replace"),
+                stderr=stderr.decode(ENCODING_UTF8, errors="replace"),
+            )
+        except subprocess.TimeoutExpired:
+            # Kill entire process group on timeout
+            _kill_process_tree(process.pid)
+            stdout, stderr = process.communicate()
+            return ExecutionResult(
+                exit_code=EXIT_CODE_TIMEOUT,
+                stdout=stdout.decode(ENCODING_UTF8, errors="replace") if stdout else "",
+                stderr=(stderr.decode(ENCODING_UTF8, errors="replace") if stderr else "")
+                       + "\n[Error: Script timed out]",
+            )
 
     except Exception as e:
         logging.exception("Unexpected error running user script.")
@@ -466,6 +490,10 @@ def _run_subprocess(script_path: str, working_dir: str, timeout_s: int) -> Execu
             stdout="",
             stderr=f"[Internal execution error] {e}",
         )
+    finally:
+        # Ensure process is terminated even on unexpected errors
+        if process and process.poll() is None:
+            _kill_process_tree(process.pid)
 
 
 def _cleanup_exec_dir(exec_dir: Path) -> None:
@@ -537,39 +565,42 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
             )
             return context_error
 
-    # Log execution start
-    log_audit_event(
-        "execution_started", request_id, client_ip, script_hash,
-        script_size, validated_timeout, len(context)
-    )
-
-    # Execute
-    result = execute_script(script, validated_timeout, context)
-    duration_ms = (time.time() - start_time) * 1000
-
-    if isinstance(result, func.HttpResponse):
+    # Acquire execution lock - ensures sequential processing
+    # This prevents concurrent scripts from interfering with each other
+    with _execution_lock:
+        # Log execution start
         log_audit_event(
-            "execution_error", request_id, client_ip, script_hash,
-            script_size, validated_timeout, len(context),
-            duration_ms=duration_ms, error="execution_failed"
+            "execution_started", request_id, client_ip, script_hash,
+            script_size, validated_timeout, len(context)
         )
-        return result
 
-    # Log execution complete
-    log_audit_event(
-        "execution_completed", request_id, client_ip, script_hash,
-        script_size, validated_timeout, len(context),
-        duration_ms=duration_ms, exit_code=result.exit_code
-    )
+        # Execute
+        result = execute_script(script, validated_timeout, context)
+        duration_ms = (time.time() - start_time) * 1000
 
-    return func.HttpResponse(
-        json.dumps({
-            "exit_code": result.exit_code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "artifacts": result.artifacts,
-        }),
-        status_code=200,
-        mimetype=CONTENT_TYPE_JSON,
-    )
+        if isinstance(result, func.HttpResponse):
+            log_audit_event(
+                "execution_error", request_id, client_ip, script_hash,
+                script_size, validated_timeout, len(context),
+                duration_ms=duration_ms, error="execution_failed"
+            )
+            return result
+
+        # Log execution complete
+        log_audit_event(
+            "execution_completed", request_id, client_ip, script_hash,
+            script_size, validated_timeout, len(context),
+            duration_ms=duration_ms, exit_code=result.exit_code
+        )
+
+        return func.HttpResponse(
+            json.dumps({
+                "exit_code": result.exit_code,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "artifacts": result.artifacts,
+            }),
+            status_code=200,
+            mimetype=CONTENT_TYPE_JSON,
+        )
 
