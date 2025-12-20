@@ -26,6 +26,7 @@ from function_app import (
     execute_script,
     _run_subprocess,
     _cleanup_exec_dir,
+    _kill_process_tree,
     _create_safe_environment,
     get_client_ip,
     compute_script_hash,
@@ -368,15 +369,16 @@ def test_cleanup_exec_dir_swallows_exceptions(mock_rmtree):
 # _run_subprocess() tests
 # ============================================================================
 
-@patch('function_app.subprocess.run')
+@patch('function_app.subprocess.Popen')
 @patch('function_app.sys.executable', '/usr/bin/python3')
-def test_run_subprocess_success(mock_run):
+def test_run_subprocess_success(mock_popen):
     """_run_subprocess() returns ExecutionResult for successful execution."""
-    mock_run.return_value = Mock(
-        returncode=0,
-        stdout=b"output",
-        stderr=b""
-    )
+    mock_process = Mock()
+    mock_process.communicate.return_value = (b"output", b"")
+    mock_process.returncode = 0
+    mock_process.pid = 12345
+    mock_process.poll.return_value = 0
+    mock_popen.return_value = mock_process
 
     result = _run_subprocess("/tmp/script.py", "/tmp", 60)
 
@@ -385,15 +387,16 @@ def test_run_subprocess_success(mock_run):
     assert result.stderr == ""
 
 
-@patch('function_app.subprocess.run')
+@patch('function_app.subprocess.Popen')
 @patch('function_app.sys.executable', '/usr/bin/python3')
-def test_run_subprocess_nonzero_exit(mock_run):
+def test_run_subprocess_nonzero_exit(mock_popen):
     """_run_subprocess() returns ExecutionResult with non-zero exit code."""
-    mock_run.return_value = Mock(
-        returncode=1,
-        stdout=b"",
-        stderr=b"error message"
-    )
+    mock_process = Mock()
+    mock_process.communicate.return_value = (b"", b"error message")
+    mock_process.returncode = 1
+    mock_process.pid = 12345
+    mock_process.poll.return_value = 1
+    mock_popen.return_value = mock_process
 
     result = _run_subprocess("/tmp/script.py", "/tmp", 60)
 
@@ -401,29 +404,34 @@ def test_run_subprocess_nonzero_exit(mock_run):
     assert result.stderr == "error message"
 
 
-@patch('function_app.subprocess.run')
+@patch('function_app._kill_process_tree')
+@patch('function_app.subprocess.Popen')
 @patch('function_app.sys.executable', '/usr/bin/python3')
-def test_run_subprocess_timeout(mock_run):
+def test_run_subprocess_timeout(mock_popen, mock_kill):
     """_run_subprocess() returns ExecutionResult with timeout exit code on timeout."""
-    mock_run.side_effect = subprocess.TimeoutExpired(
-        cmd=["python3", "script.py"],
-        timeout=60,
-        output=b"partial output",
-        stderr=b"partial error"
-    )
+    mock_process = Mock()
+    mock_process.pid = 12345
+    mock_process.poll.return_value = None
+    # First call raises timeout, second call (after kill) returns output
+    mock_process.communicate.side_effect = [
+        subprocess.TimeoutExpired(cmd=["python3"], timeout=60),
+        (b"partial output", b"partial error")
+    ]
+    mock_popen.return_value = mock_process
 
     result = _run_subprocess("/tmp/script.py", "/tmp", 60)
 
     assert result.exit_code == EXIT_CODE_TIMEOUT
     assert "partial output" in result.stdout
     assert "timed out" in result.stderr
+    mock_kill.assert_called_with(12345)
 
 
-@patch('function_app.subprocess.run')
+@patch('function_app.subprocess.Popen')
 @patch('function_app.sys.executable', '/usr/bin/python3')
-def test_run_subprocess_unexpected_exception(mock_run):
+def test_run_subprocess_unexpected_exception(mock_popen):
     """_run_subprocess() returns ExecutionResult with internal error on exception."""
-    mock_run.side_effect = RuntimeError("Unexpected error")
+    mock_popen.side_effect = RuntimeError("Unexpected error")
 
     result = _run_subprocess("/tmp/script.py", "/tmp", 60)
 
@@ -431,28 +439,38 @@ def test_run_subprocess_unexpected_exception(mock_run):
     assert "Internal execution error" in result.stderr
 
 
-@patch('function_app.subprocess.run')
+@patch('function_app.subprocess.Popen')
 @patch('function_app.sys.executable', '/usr/bin/python3')
-def test_run_subprocess_command_args(mock_run):
+def test_run_subprocess_command_args(mock_popen):
     """_run_subprocess() invokes subprocess with correct command arguments."""
-    mock_run.return_value = Mock(returncode=0, stdout=b"", stderr=b"")
+    mock_process = Mock()
+    mock_process.communicate.return_value = (b"", b"")
+    mock_process.returncode = 0
+    mock_process.pid = 12345
+    mock_process.poll.return_value = 0
+    mock_popen.return_value = mock_process
 
     _run_subprocess("/tmp/script.py", "/tmp", 60)
 
-    call_args = mock_run.call_args
+    call_args = mock_popen.call_args
     assert call_args[0][0] == ['/usr/bin/python3', '-X', 'utf8', '/tmp/script.py']
+    assert call_args[1]['start_new_session'] is True
 
 
-@patch('function_app.subprocess.run')
+@patch('function_app.subprocess.Popen')
 @patch('function_app.sys.executable', '/usr/bin/python3')
-def test_run_subprocess_timeout_parameter(mock_run):
-    """_run_subprocess() passes timeout parameter to subprocess.run."""
-    mock_run.return_value = Mock(returncode=0, stdout=b"", stderr=b"")
+def test_run_subprocess_timeout_parameter(mock_popen):
+    """_run_subprocess() passes timeout parameter to communicate()."""
+    mock_process = Mock()
+    mock_process.communicate.return_value = (b"", b"")
+    mock_process.returncode = 0
+    mock_process.pid = 12345
+    mock_process.poll.return_value = 0
+    mock_popen.return_value = mock_process
 
     _run_subprocess("/tmp/script.py", "/tmp", 120)
 
-    call_args = mock_run.call_args
-    assert call_args[1]['timeout'] == 120
+    mock_process.communicate.assert_called_with(timeout=120)
 
 
 # ============================================================================
@@ -1342,3 +1360,31 @@ def test_safe_env_vars_is_frozen():
     assert isinstance(SAFE_ENV_VARS, frozenset)
     with pytest.raises(AttributeError):
         SAFE_ENV_VARS.add("NEW_VAR")
+
+
+@patch('function_app.os.killpg')
+def test_kill_process_tree_success(mock_killpg):
+    """_kill_process_tree() calls os.killpg with SIGKILL."""
+    import signal as sig
+
+    _kill_process_tree(12345)
+
+    mock_killpg.assert_called_once_with(12345, sig.SIGKILL)
+
+
+@patch('function_app.os.killpg')
+def test_kill_process_tree_handles_process_not_found(mock_killpg):
+    """_kill_process_tree() handles ProcessLookupError gracefully."""
+    mock_killpg.side_effect = ProcessLookupError()
+
+    # Should not raise
+    _kill_process_tree(12345)
+
+
+@patch('function_app.os.killpg')
+def test_kill_process_tree_handles_permission_error(mock_killpg):
+    """_kill_process_tree() handles PermissionError gracefully."""
+    mock_killpg.side_effect = PermissionError()
+
+    # Should not raise
+    _kill_process_tree(12345)
