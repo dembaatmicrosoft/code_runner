@@ -1,5 +1,7 @@
 # CodeRunner
 
+![CodeRunner](code_runner_app_lite.png)
+
 A serverless Azure Function for executing Python scripts in isolated subprocesses with support for input/output files.
 
 ## Overview
