@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, Union
 import azure.functions as func
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -33,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 
@@ -58,6 +60,58 @@ ENCODING_BASE64 = "base64"
 # Exit codes
 EXIT_CODE_TIMEOUT = 124
 EXIT_CODE_INTERNAL_ERROR = -1
+
+
+def get_client_ip(req: func.HttpRequest) -> str:
+    """Extract client IP from request headers (handles proxies)."""
+    # Azure Front Door / API Management / Load Balancer headers
+    forwarded_for = req.headers.get("X-Forwarded-For", "")
+    if forwarded_for:
+        # Take the first IP in the chain (original client)
+        return forwarded_for.split(",")[0].strip()
+
+    # Direct connection (rare in Azure)
+    return req.headers.get("X-Client-IP", "unknown")
+
+
+def compute_script_hash(script: str) -> str:
+    """Compute SHA256 hash of script for audit logging (not storage)."""
+    return hashlib.sha256(script.encode(ENCODING_UTF8)).hexdigest()[:16]
+
+
+def log_audit_event(
+    event_type: str,
+    request_id: str,
+    client_ip: str,
+    script_hash: str,
+    script_size: int,
+    timeout_s: int,
+    context_files: int,
+    duration_ms: Optional[float] = None,
+    exit_code: Optional[int] = None,
+    error: Optional[str] = None,
+) -> None:
+    """Log structured audit event for security monitoring."""
+    audit_data = {
+        "audit": True,
+        "event": event_type,
+        "request_id": request_id,
+        "client_ip": client_ip,
+        "script_hash": script_hash,
+        "script_size_bytes": script_size,
+        "timeout_s": timeout_s,
+        "context_files": context_files,
+    }
+
+    if duration_ms is not None:
+        audit_data["duration_ms"] = round(duration_ms, 2)
+    if exit_code is not None:
+        audit_data["exit_code"] = exit_code
+    if error is not None:
+        audit_data["error"] = error
+
+    # Use structured JSON logging for easy parsing in Azure Monitor
+    logging.info(f"AUDIT: {json.dumps(audit_data)}")
 
 
 @dataclass
@@ -179,16 +233,20 @@ def validate_context(context: Dict[str, ContextFile]) -> Optional[func.HttpRespo
 
 
 def materialize_context(context: Dict[str, ContextFile], exec_dir: Path) -> None:
-    """Write context files to input directory."""
+    """Write context files to input directory with secure permissions."""
     input_dir = exec_dir / INPUT_DIR
     output_dir = exec_dir / OUTPUT_DIR
 
-    input_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Create directories with restrictive permissions
+    input_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     for name, ctx_file in context.items():
         file_bytes = decode_file_content(ctx_file)
-        (input_dir / name).write_bytes(file_bytes)
+        file_path = input_dir / name
+        file_path.write_bytes(file_bytes)
+        # Set file to read-only for the script
+        file_path.chmod(0o400)
 
 
 def collect_artifacts(exec_dir: Path) -> Union[dict, func.HttpResponse]:
@@ -301,7 +359,8 @@ def execute_script(
     exec_dir = Path(tempfile.gettempdir()) / f"exec_{exec_id}"
 
     try:
-        exec_dir.mkdir(parents=True, exist_ok=True)
+        # Create execution directory with restrictive permissions (owner only)
+        exec_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
         # Materialize context files
         if context:
@@ -334,12 +393,46 @@ def execute_script(
         _cleanup_exec_dir(exec_dir)
 
 
+# Environment variables safe to pass to subprocess
+SAFE_ENV_VARS = frozenset([
+    # Essential for Python to function
+    "PATH",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    # Linux essentials
+    "USER",
+    "SHELL",
+])
+
+
+def _create_safe_environment() -> dict:
+    """Create a minimal, safe environment for subprocess execution."""
+    safe_env = {}
+
+    # Copy only safe variables that exist
+    for var in SAFE_ENV_VARS:
+        if var in os.environ:
+            safe_env[var] = os.environ[var]
+
+    # Ensure Python encoding is set
+    safe_env["PYTHONIOENCODING"] = ENCODING_UTF8
+    safe_env["PYTHONUNBUFFERED"] = "1"
+
+    return safe_env
+
+
 def _run_subprocess(script_path: str, working_dir: str, timeout_s: int) -> ExecutionResult:
     """Run Python subprocess and capture output."""
     python_exe = sys.executable or "python3"
     cmd = [python_exe, "-X", "utf8", script_path]
-    env = os.environ.copy()
-    env["PYTHONIOENCODING"] = ENCODING_UTF8
+    env = _create_safe_environment()
 
     try:
         completed = subprocess.run(
@@ -387,10 +480,14 @@ app = func.FunctionApp()
 
 
 @app.function_name(name="RunPythonScript")
-@app.route(route="run", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
+@app.route(route="run", methods=["POST"], auth_level=func.AuthLevel.FUNCTION)
 def run_script(req: func.HttpRequest) -> func.HttpResponse:
     """Execute user-supplied Python code and return exit_code/stdout/stderr/artifacts."""
-    logging.info("Received request to run python script.")
+    start_time = time.time()
+    request_id = str(uuid.uuid4())[:8]
+    client_ip = get_client_ip(req)
+
+    logging.info(f"[{request_id}] Received script execution request from {client_ip}")
 
     # Parse request
     parsed = parse_request(req)
@@ -398,14 +495,26 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
         return parsed
     script, timeout_s, raw_context = parsed
 
+    # Compute audit info early
+    script_hash = compute_script_hash(script)
+    script_size = len(script.encode(ENCODING_UTF8))
+
     # Validate timeout
     validated_timeout = validate_timeout(timeout_s)
     if isinstance(validated_timeout, func.HttpResponse):
+        log_audit_event(
+            "request_rejected", request_id, client_ip, script_hash,
+            script_size, timeout_s, 0, error="invalid_timeout"
+        )
         return validated_timeout
 
     # Validate script size
     size_error = validate_script_size(script)
     if size_error:
+        log_audit_event(
+            "request_rejected", request_id, client_ip, script_hash,
+            script_size, validated_timeout, 0, error="script_too_large"
+        )
         return size_error
 
     # Parse and validate context
@@ -413,17 +522,45 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
     if raw_context:
         parsed_context = parse_context(raw_context)
         if isinstance(parsed_context, func.HttpResponse):
+            log_audit_event(
+                "request_rejected", request_id, client_ip, script_hash,
+                script_size, validated_timeout, len(raw_context), error="invalid_context"
+            )
             return parsed_context
         context = parsed_context
 
         context_error = validate_context(context)
         if context_error:
+            log_audit_event(
+                "request_rejected", request_id, client_ip, script_hash,
+                script_size, validated_timeout, len(context), error="context_validation_failed"
+            )
             return context_error
+
+    # Log execution start
+    log_audit_event(
+        "execution_started", request_id, client_ip, script_hash,
+        script_size, validated_timeout, len(context)
+    )
 
     # Execute
     result = execute_script(script, validated_timeout, context)
+    duration_ms = (time.time() - start_time) * 1000
+
     if isinstance(result, func.HttpResponse):
+        log_audit_event(
+            "execution_error", request_id, client_ip, script_hash,
+            script_size, validated_timeout, len(context),
+            duration_ms=duration_ms, error="execution_failed"
+        )
         return result
+
+    # Log execution complete
+    log_audit_event(
+        "execution_completed", request_id, client_ip, script_hash,
+        script_size, validated_timeout, len(context),
+        duration_ms=duration_ms, exit_code=result.exit_code
+    )
 
     return func.HttpResponse(
         json.dumps({

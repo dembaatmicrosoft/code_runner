@@ -1,12 +1,13 @@
 # Local Azure Functions settings (may contain secrets)
 local.settings.json
 
-# Test coverage
+# Test coverage and artifacts
 .coverage
 coverage.json
 htmlcov/
 .pytest_cache/
 .benchmarks/
+MagicMock/
 
 # Python
 __pycache__/

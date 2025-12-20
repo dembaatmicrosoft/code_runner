@@ -26,6 +26,10 @@ from function_app import (
     execute_script,
     _run_subprocess,
     _cleanup_exec_dir,
+    _create_safe_environment,
+    get_client_ip,
+    compute_script_hash,
+    log_audit_event,
     ExecutionResult,
     ContextFile,
     is_binary_content,
@@ -48,6 +52,7 @@ from function_app import (
     MAX_CONTEXT_FILES,
     MAX_SINGLE_FILE_BYTES,
     MAX_ARTIFACTS_BYTES,
+    SAFE_ENV_VARS,
     INPUT_DIR,
     OUTPUT_DIR,
 )
@@ -1206,3 +1211,134 @@ def test_run_script_context_validation_error(mock_execute):
 
     assert response.status_code == 400
     assert not mock_execute.called
+
+
+# =============================================================================
+# Security Quick Wins Tests
+# =============================================================================
+
+
+def test_get_client_ip_from_forwarded_header():
+    """get_client_ip() extracts IP from X-Forwarded-For header."""
+    req = Mock(spec=func.HttpRequest)
+    req.headers.get.side_effect = lambda h, d="": "1.2.3.4, 10.0.0.1" if h == "X-Forwarded-For" else d
+
+    result = get_client_ip(req)
+
+    assert result == "1.2.3.4"
+
+
+def test_get_client_ip_from_client_ip_header():
+    """get_client_ip() falls back to X-Client-IP when X-Forwarded-For is empty."""
+    req = Mock(spec=func.HttpRequest)
+    req.headers.get.side_effect = lambda h, d="": "5.6.7.8" if h == "X-Client-IP" else d
+
+    result = get_client_ip(req)
+
+    assert result == "5.6.7.8"
+
+
+def test_get_client_ip_unknown():
+    """get_client_ip() returns 'unknown' when no IP headers present."""
+    req = Mock(spec=func.HttpRequest)
+    # Simulate no headers by returning empty for X-Forwarded-For and "unknown" default for X-Client-IP
+    def header_getter(name, default=""):
+        if name == "X-Forwarded-For":
+            return ""
+        if name == "X-Client-IP":
+            return default  # Returns the default which is "unknown"
+        return default
+    req.headers.get.side_effect = header_getter
+
+    result = get_client_ip(req)
+
+    assert result == "unknown"
+
+
+def test_compute_script_hash_deterministic():
+    """compute_script_hash() returns consistent hash for same script."""
+    script = "print('hello')"
+
+    hash1 = compute_script_hash(script)
+    hash2 = compute_script_hash(script)
+
+    assert hash1 == hash2
+    assert len(hash1) == 16  # Truncated to 16 chars
+
+
+def test_compute_script_hash_different_scripts():
+    """compute_script_hash() returns different hashes for different scripts."""
+    script1 = "print('hello')"
+    script2 = "print('world')"
+
+    hash1 = compute_script_hash(script1)
+    hash2 = compute_script_hash(script2)
+
+    assert hash1 != hash2
+
+
+@patch('function_app.logging')
+def test_log_audit_event_logs_json(mock_logging):
+    """log_audit_event() logs structured JSON."""
+    log_audit_event(
+        "test_event", "req123", "1.2.3.4", "abc123",
+        100, 30, 2, duration_ms=150.5, exit_code=0
+    )
+
+    mock_logging.info.assert_called_once()
+    call_arg = mock_logging.info.call_args[0][0]
+    assert "AUDIT:" in call_arg
+    assert '"event": "test_event"' in call_arg
+    assert '"request_id": "req123"' in call_arg
+    assert '"exit_code": 0' in call_arg
+
+
+def test_create_safe_environment_excludes_secrets():
+    """_create_safe_environment() excludes sensitive variables."""
+    import os
+    # Set some dangerous env vars
+    original_env = os.environ.copy()
+    try:
+        os.environ["AZURE_STORAGE_CONNECTION_STRING"] = "secret123"
+        os.environ["API_KEY"] = "supersecret"
+        os.environ["PATH"] = "/usr/bin"  # Safe var
+
+        safe_env = _create_safe_environment()
+
+        assert "AZURE_STORAGE_CONNECTION_STRING" not in safe_env
+        assert "API_KEY" not in safe_env
+        assert safe_env.get("PATH") == "/usr/bin"
+        assert safe_env.get("PYTHONIOENCODING") == "utf-8"
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)
+
+
+def test_create_safe_environment_only_includes_safe_vars():
+    """_create_safe_environment() only includes variables in SAFE_ENV_VARS."""
+    import os
+    original_env = os.environ.copy()
+    try:
+        os.environ.clear()
+        os.environ["PATH"] = "/usr/bin"
+        os.environ["HOME"] = "/home/user"
+        os.environ["DANGEROUS_VAR"] = "should_not_appear"
+
+        safe_env = _create_safe_environment()
+
+        assert safe_env.get("PATH") == "/usr/bin"
+        assert safe_env.get("HOME") == "/home/user"
+        assert "DANGEROUS_VAR" not in safe_env
+        # Always added
+        assert "PYTHONIOENCODING" in safe_env
+        assert "PYTHONUNBUFFERED" in safe_env
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)
+
+
+def test_safe_env_vars_is_frozen():
+    """SAFE_ENV_VARS is immutable frozenset."""
+    assert isinstance(SAFE_ENV_VARS, frozenset)
+    with pytest.raises(AttributeError):
+        SAFE_ENV_VARS.add("NEW_VAR")

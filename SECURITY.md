@@ -37,18 +37,22 @@ The following security measures are implemented:
 
 | Measure | Description |
 |---------|-------------|
+| **Authentication** | Function-level key required for access (not anonymous) |
+| **Audit logging** | Structured JSON logging with request ID, client IP, script hash, and execution metrics |
+| **Environment sanitization** | Subprocess receives minimal safe environment (no secrets exposed) |
 | **Timeout enforcement** | Scripts are terminated after the configured timeout (max 300s) |
 | **Size limits** | Script size capped at 256 KiB; context/artifacts at 10 MB |
 | **Path traversal prevention** | Context filenames are validated to prevent directory escape |
-| **Temporary isolation** | Each execution uses a unique temporary directory |
+| **Temporary isolation** | Each execution uses a unique directory with restrictive permissions (0700) |
 | **Subprocess isolation** | Scripts run in a subprocess, not in the function host |
+| **Read-only input files** | Context files are written with read-only permissions (0400) |
 
 ### Recommended Deployment Practices
 
-1. **Enable authentication**: Configure Azure AD or API key authentication instead of anonymous access
-2. **Network isolation**: Deploy within a VNet with restricted ingress
-3. **Monitoring**: Enable Application Insights for audit logging
-4. **Rate limiting**: Configure API Management or Azure Front Door for rate limiting
+1. **Network isolation**: Deploy within a VNet with restricted ingress
+2. **Monitoring**: Enable Application Insights for audit logging analysis
+3. **Rate limiting**: Configure API Management or Azure Front Door for rate limiting
+4. **Key rotation**: Regularly rotate function access keys
 
 ### Known Limitations
 
