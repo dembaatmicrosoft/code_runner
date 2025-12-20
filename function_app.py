@@ -1,6 +1,29 @@
+# Copyright (c) 2025 Microsoft Corporation.
+# Licensed under the MIT License. See LICENSE file in the project root.
+
+"""
+CodeRunner Azure Function
+
+A serverless endpoint for executing Python scripts in isolated subprocesses.
+Supports input files (context) and output files (artifacts) for data processing
+workflows.
+
+Features:
+    - Execute arbitrary Python code with configurable timeout
+    - Provide input files via context (text or base64-encoded binary)
+    - Collect output files as artifacts (auto-detected encoding)
+    - Size limits and path validation for security
+
+Usage:
+    POST /api/run with JSON body: {"script": "...", "timeout_s": 60, "context": {...}}
+    POST /api/run with text/plain body containing Python code
+
+See README.md for full documentation.
+"""
+
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 import azure.functions as func
 import base64
 import json
@@ -81,7 +104,7 @@ def decode_file_content(context_file: ContextFile) -> bytes:
     return context_file.content.encode(ENCODING_UTF8)
 
 
-def encode_file_content(data: bytes) -> str | dict:
+def encode_file_content(data: bytes) -> Union[str, dict]:
     """Encode file content for response. Auto-detects binary vs text."""
     if is_binary_content(data):
         return {
@@ -91,7 +114,7 @@ def encode_file_content(data: bytes) -> str | dict:
     return data.decode(ENCODING_UTF8)
 
 
-def parse_context(raw_context: dict) -> dict[str, ContextFile] | func.HttpResponse:
+def parse_context(raw_context: dict) -> Union[Dict[str, ContextFile], func.HttpResponse]:
     """Parse raw context dict into ContextFile objects. Returns parsed context or error."""
     if not isinstance(raw_context, dict):
         return error_response("`context` must be an object.")
@@ -121,7 +144,7 @@ def parse_context(raw_context: dict) -> dict[str, ContextFile] | func.HttpRespon
     return parsed
 
 
-def validate_context(context: dict[str, ContextFile]) -> Optional[func.HttpResponse]:
+def validate_context(context: Dict[str, ContextFile]) -> Optional[func.HttpResponse]:
     """Validate context constraints. Returns None if valid, error response otherwise."""
     if len(context) > MAX_CONTEXT_FILES:
         return error_response(f"Too many context files: {len(context)} > {MAX_CONTEXT_FILES}")
@@ -155,7 +178,7 @@ def validate_context(context: dict[str, ContextFile]) -> Optional[func.HttpRespo
     return None
 
 
-def materialize_context(context: dict[str, ContextFile], exec_dir: Path) -> None:
+def materialize_context(context: Dict[str, ContextFile], exec_dir: Path) -> None:
     """Write context files to input directory."""
     input_dir = exec_dir / INPUT_DIR
     output_dir = exec_dir / OUTPUT_DIR
@@ -168,7 +191,7 @@ def materialize_context(context: dict[str, ContextFile], exec_dir: Path) -> None
         (input_dir / name).write_bytes(file_bytes)
 
 
-def collect_artifacts(exec_dir: Path) -> dict | func.HttpResponse:
+def collect_artifacts(exec_dir: Path) -> Union[dict, func.HttpResponse]:
     """Collect files from output directory. Returns artifacts dict or error response."""
     output_dir = exec_dir / OUTPUT_DIR
 
@@ -197,7 +220,7 @@ def collect_artifacts(exec_dir: Path) -> dict | func.HttpResponse:
     return artifacts
 
 
-def parse_request(req: func.HttpRequest) -> Tuple[str, int, dict] | func.HttpResponse:
+def parse_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict], func.HttpResponse]:
     """Extract script, timeout, and raw context from request."""
     content_type = req.headers.get("content-type", "")
 
@@ -206,7 +229,7 @@ def parse_request(req: func.HttpRequest) -> Tuple[str, int, dict] | func.HttpRes
     return _parse_json_request(req)
 
 
-def _parse_raw_request(req: func.HttpRequest) -> Tuple[str, int, dict] | func.HttpResponse:
+def _parse_raw_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict], func.HttpResponse]:
     """Parse raw text request: script in body, timeout in query param. No context support."""
     try:
         script = req.get_body().decode(ENCODING_UTF8)
@@ -223,7 +246,7 @@ def _parse_raw_request(req: func.HttpRequest) -> Tuple[str, int, dict] | func.Ht
         return error_response("`timeout_s` query parameter must be integer.")
 
 
-def _parse_json_request(req: func.HttpRequest) -> Tuple[str, int, dict] | func.HttpResponse:
+def _parse_json_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict], func.HttpResponse]:
     """Parse JSON request: script, timeout, and context in body."""
     try:
         body = req.get_json()
@@ -244,7 +267,7 @@ def _parse_json_request(req: func.HttpRequest) -> Tuple[str, int, dict] | func.H
     return (script, timeout_s, raw_context)
 
 
-def validate_timeout(timeout_s: int) -> int | func.HttpResponse:
+def validate_timeout(timeout_s: int) -> Union[int, func.HttpResponse]:
     """Validate and clamp timeout. Returns clamped timeout or error response."""
     if timeout_s <= 0:
         return error_response("`timeout_s` must be > 0.")
@@ -270,8 +293,8 @@ def validate_script_size(script: str) -> Optional[func.HttpResponse]:
 def execute_script(
     script: str,
     timeout_s: int,
-    context: dict[str, ContextFile] | None = None
-) -> ExecutionResult | func.HttpResponse:
+    context: Optional[Dict[str, ContextFile]] = None
+) -> Union[ExecutionResult, func.HttpResponse]:
     """Execute script in subprocess with optional context. Returns ExecutionResult or error."""
     context = context or {}
     exec_id = str(uuid.uuid4())

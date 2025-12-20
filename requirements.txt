@@ -1,1 +1,2 @@
-azure-functions
+# Azure Functions SDK
+azure-functions~=1.18.0

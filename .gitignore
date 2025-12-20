@@ -1,8 +1,4 @@
-# Project-specific
-CLAUDE.md
-.tmp/
-
-# Local Azure Functions settings (contains secrets)
+# Local Azure Functions settings (may contain secrets)
 local.settings.json
 
 # Test coverage
@@ -10,6 +6,7 @@ local.settings.json
 coverage.json
 htmlcov/
 .pytest_cache/
+.benchmarks/
 
 # Python
 __pycache__/

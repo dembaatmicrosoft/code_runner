@@ -1,5 +1,8 @@
+# Copyright (c) 2025 Microsoft Corporation.
+# Licensed under the MIT License. See LICENSE file in the project root.
+
 """
-Comprehensive unit tests for CodeRunner Azure Function.
+Unit tests for CodeRunner Azure Function.
 
 Test organization follows AAA pattern (Arrange, Act, Assert).
 Each test validates one specific behavior with minimal assertions.

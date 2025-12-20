@@ -2,18 +2,14 @@
   "swagger": "2.0",
   "info": {
     "title": "CodeRunner API",
-    "description": "Single endpoint to run Python scripts in a sandboxed subprocess.\n\nSupports two modes:\n- JSON mode: POST application/json with { script, timeout_s, context }.\n- Raw mode: POST text/plain (body = script), with timeout_s query-param (no context support).\n\nContext & Artifacts:\n- Scripts can read input files from ./input/ directory (provided via 'context')\n- Scripts can write output files to ./output/ directory (returned as 'artifacts')\n- Binary files use base64 encoding (auto-detected)\n\nLimits:\n- script: 256 KiB (UTF-8 bytes)\n- timeout_s: 300 s max (clamped)\n- context: 10 MB total, 5 MB per file, 20 files max\n- artifacts: 10 MB total\n- OOM kills at ~1.5 GB\n\nRuns inside Function host sandbox, not fully container-isolated. Suitable for development/testing; do not use with untrusted code in production.",
+    "description": "Execute Python scripts in a sandboxed subprocess.\n\nSupports two modes:\n- JSON mode: POST application/json with { script, timeout_s, context }\n- Raw mode: POST text/plain (body = script), with timeout_s query-param\n\nContext & Artifacts:\n- Scripts read input files from ./input/ (provided via 'context')\n- Scripts write output files to ./output/ (returned as 'artifacts')\n- Binary files use base64 encoding (auto-detected)\n\nLimits:\n- script: 256 KiB\n- timeout_s: 300 s max\n- context: 10 MB total, 5 MB per file, 20 files max\n- artifacts: 10 MB total\n\nIntended for trusted environments only. See SECURITY.md for details.",
     "version": "2.0.0",
-    "contact": {
-      "name": "Developer Support",
-      "url": "https://github.com/dembaatmicrosoft/code_runner/issues"
-    },
     "license": {
       "name": "MIT",
       "url": "https://opensource.org/licenses/MIT"
     }
   },
-  "host": "coderunner-fn.azurewebsites.net",
+  "host": "localhost:7071",
   "basePath": "/api",
   "schemes": [
     "https"
