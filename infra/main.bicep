@@ -27,7 +27,7 @@ param location string = resourceGroup().location
 var resourceToken = toLower(uniqueString(resourceGroup().id))
 var functionAppName = 'coderunner-${resourceToken}'
 var storageAccountName = 'crstore${resourceToken}'
-var contentShareName = 'coderunner-content'
+var contentShareName = 'coderunner-${resourceToken}'
 var appServicePlanName = 'asp-coderunner-${resourceToken}'
 var logAnalyticsName = 'log-coderunner-${resourceToken}'
 var appInsightsName = 'appi-coderunner-${resourceToken}'
@@ -89,21 +89,6 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
 }
 
-// 4. File Services (depends on Storage Account)
-resource fileServices 'Microsoft.Storage/storageAccounts/fileServices@2023-01-01' = {
-  parent: storage
-  name: 'default'
-}
-
-// 5. File Share (depends on File Services)
-resource fileShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-01-01' = {
-  parent: fileServices
-  name: contentShareName
-  properties: {
-    shareQuota: 5120
-  }
-}
-
 // 6. App Service Plan
 resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
   name: appServicePlanName
@@ -119,7 +104,7 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
   }
 }
 
-// 7. Function App (explicit dependsOn to ensure storage is fully ready)
+// 4. Function App
 resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
   name: functionAppName
   location: location
@@ -127,9 +112,6 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
     'azd-service-name': 'api'
   })
   kind: 'functionapp,linux'
-  dependsOn: [
-    fileShare  // Explicit dependency on file share
-  ]
   properties: {
     serverFarmId: appServicePlan.id
     httpsOnly: true
