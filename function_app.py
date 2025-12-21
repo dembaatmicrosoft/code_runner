@@ -476,11 +476,12 @@ def _run_subprocess(script_path: str, working_dir: str, timeout_s: int) -> Execu
             # Kill entire process group on timeout
             _kill_process_tree(process.pid)
             stdout, stderr = process.communicate()
+            timeout_stderr = (stderr.decode(ENCODING_UTF8, errors="replace") if stderr else "")
+            timeout_stderr += "\n[Error: Script timed out]"
             return ExecutionResult(
                 exit_code=EXIT_CODE_TIMEOUT,
                 stdout=stdout.decode(ENCODING_UTF8, errors="replace") if stdout else "",
-                stderr=(stderr.decode(ENCODING_UTF8, errors="replace") if stderr else "")
-                       + "\n[Error: Script timed out]",
+                stderr=timeout_stderr,
             )
 
     except Exception as e:
@@ -603,4 +604,3 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
             status_code=200,
             mimetype=CONTENT_TYPE_JSON,
         )
-
