@@ -4,7 +4,7 @@
 //
 // Deploy with the "Deploy to Azure" button - no CLI required!
 //
-// This template provisions all Azure resources required for CodeRunner:
+// Resources provisioned:
 //   - Storage Account (for function app state)
 //   - App Service Plan (Consumption tier - FREE)
 //   - Function App (Python 3.11, Linux)
@@ -17,13 +17,6 @@
 //
 // =============================================================================
 
-// Deploy to the resource group selected in the Azure Portal
-// No subscription-level permissions required!
-
-// ---------------------------------------------------------------------------
-// Parameters
-// ---------------------------------------------------------------------------
-
 @description('Location for all resources. Defaults to the resource group location.')
 param location string = resourceGroup().location
 
@@ -31,10 +24,7 @@ param location string = resourceGroup().location
 // Variables
 // ---------------------------------------------------------------------------
 
-// Generate unique suffix based on resource group - ensures unique names
 var resourceToken = toLower(uniqueString(resourceGroup().id))
-
-// Resource naming
 var functionAppName = 'coderunner-${resourceToken}'
 var storageAccountName = 'crstore${resourceToken}'
 var contentShareName = 'coderunner-content'
@@ -48,83 +38,157 @@ var tags = {
 }
 
 // ---------------------------------------------------------------------------
-// Resources
+// Resources - Defined in dependency order
 // ---------------------------------------------------------------------------
 
-// Log Analytics Workspace for monitoring
-module logAnalytics 'modules/log-analytics.bicep' = {
-  name: 'logAnalytics'
-  params: {
-    name: logAnalyticsName
-    location: location
-    tags: tags
-  }
-}
-
-// Application Insights for function monitoring
-module appInsights 'modules/app-insights.bicep' = {
-  name: 'appInsights'
-  params: {
-    name: appInsightsName
-    location: location
-    tags: tags
-    logAnalyticsWorkspaceId: logAnalytics.outputs.id
-  }
-}
-
-// Storage Account for function app
-module storage 'modules/storage.bicep' = {
-  name: 'storage'
-  params: {
-    name: storageAccountName
-    location: location
-    tags: tags
-    contentShareName: contentShareName
-  }
-}
-
-// App Service Plan (Consumption tier - FREE)
-module appServicePlan 'modules/app-service-plan.bicep' = {
-  name: 'appServicePlan'
-  params: {
-    name: appServicePlanName
-    location: location
-    tags: tags
+// 1. Log Analytics Workspace
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
+  name: logAnalyticsName
+  location: location
+  tags: tags
+  properties: {
     sku: {
-      name: 'Y1'
-      tier: 'Dynamic'
+      name: 'PerGB2018'
+    }
+    retentionInDays: 30
+  }
+}
+
+// 2. Application Insights (depends on Log Analytics)
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: appInsightsName
+  location: location
+  tags: tags
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    WorkspaceResourceId: logAnalytics.id
+  }
+}
+
+// 3. Storage Account
+resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
+  name: storageAccountName
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard_LRS'
+  }
+  kind: 'StorageV2'
+  properties: {
+    supportsHttpsTrafficOnly: true
+    minimumTlsVersion: 'TLS1_2'
+    accessTier: 'Hot'
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: true
+    publicNetworkAccess: 'Enabled'
+    networkAcls: {
+      defaultAction: 'Allow'
+      bypass: 'AzureServices'
     }
   }
 }
 
-// Function App (depends on storage to ensure file share exists)
-module functionApp 'modules/function-app.bicep' = {
-  name: 'functionApp'
-  params: {
-    name: functionAppName
-    location: location
-    tags: tags
-    appServicePlanId: appServicePlan.outputs.id
-    storageAccountName: storage.outputs.name
-    storageAccountKey: storage.outputs.key
-    contentShareName: contentShareName
-    appInsightsConnectionString: appInsights.outputs.connectionString
-    appInsightsInstrumentationKey: appInsights.outputs.instrumentationKey
+// 4. File Services (depends on Storage Account)
+resource fileServices 'Microsoft.Storage/storageAccounts/fileServices@2023-01-01' = {
+  parent: storage
+  name: 'default'
+}
+
+// 5. File Share (depends on File Services)
+resource fileShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-01-01' = {
+  parent: fileServices
+  name: contentShareName
+  properties: {
+    shareQuota: 5120
+  }
+}
+
+// 6. App Service Plan
+resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
+  name: appServicePlanName
+  location: location
+  tags: tags
+  kind: 'linux'
+  sku: {
+    name: 'Y1'
+    tier: 'Dynamic'
+  }
+  properties: {
+    reserved: true
+  }
+}
+
+// 7. Function App (explicit dependsOn to ensure storage is fully ready)
+resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
+  name: functionAppName
+  location: location
+  tags: union(tags, {
+    'azd-service-name': 'api'
+  })
+  kind: 'functionapp,linux'
+  dependsOn: [
+    fileShare  // Explicit dependency on file share
+  ]
+  properties: {
+    serverFarmId: appServicePlan.id
+    httpsOnly: true
+    siteConfig: {
+      linuxFxVersion: 'Python|3.11'
+      pythonVersion: '3.11'
+      ftpsState: 'Disabled'
+      minTlsVersion: '1.2'
+      http20Enabled: true
+      appSettings: [
+        {
+          name: 'AzureWebJobsStorage'
+          value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};AccountKey=${storage.listKeys().keys[0].value};EndpointSuffix=core.windows.net'
+        }
+        {
+          name: 'WEBSITE_CONTENTAZUREFILECONNECTIONSTRING'
+          value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};AccountKey=${storage.listKeys().keys[0].value};EndpointSuffix=core.windows.net'
+        }
+        {
+          name: 'WEBSITE_CONTENTSHARE'
+          value: contentShareName
+        }
+        {
+          name: 'FUNCTIONS_EXTENSION_VERSION'
+          value: '~4'
+        }
+        {
+          name: 'FUNCTIONS_WORKER_RUNTIME'
+          value: 'python'
+        }
+        {
+          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+          value: appInsights.properties.ConnectionString
+        }
+        {
+          name: 'SCM_DO_BUILD_DURING_DEPLOYMENT'
+          value: 'true'
+        }
+        {
+          name: 'ENABLE_ORYX_BUILD'
+          value: 'true'
+        }
+      ]
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Outputs - Shown in Azure Portal after deployment
+// Outputs
 // ---------------------------------------------------------------------------
 
 @description('The API endpoint URL. Use this to call your CodeRunner instance.')
-output apiEndpoint string = functionApp.outputs.endpoint
+output apiEndpoint string = 'https://${functionApp.properties.defaultHostName}'
 
 @description('The name of the deployed Function App.')
-output functionAppName string = functionApp.outputs.name
+output functionAppName string = functionApp.name
 
 @description('The resource group containing all resources.')
-output resourceGroup string = resourceGroup().name
+output resourceGroupName string = resourceGroup().name
 
-@description('Next step: Deploy your code using the Azure Functions Core Tools or VS Code.')
-output nextSteps string = 'Run: func azure functionapp publish ${functionApp.outputs.name}'
+@description('Next step: Deploy your code using Azure Functions Core Tools.')
+output nextSteps string = 'Run: func azure functionapp publish ${functionApp.name}'

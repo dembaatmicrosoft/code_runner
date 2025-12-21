@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "15258542845486662325"
+      "templateHash": "8713335655443820668"
     }
   },
   "parameters": {
@@ -32,641 +32,147 @@
   },
   "resources": [
     {
-      "type": "Microsoft.Resources/deployments",
-      "apiVersion": "2025-04-01",
-      "name": "logAnalytics",
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2022-10-01",
+      "name": "[variables('logAnalyticsName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
       "properties": {
-        "expressionEvaluationOptions": {
-          "scope": "inner"
+        "sku": {
+          "name": "PerGB2018"
         },
-        "mode": "Incremental",
-        "parameters": {
-          "name": {
-            "value": "[variables('logAnalyticsName')]"
-          },
-          "location": {
-            "value": "[parameters('location')]"
-          },
-          "tags": {
-            "value": "[variables('tags')]"
-          }
-        },
-        "template": {
-          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-          "contentVersion": "1.0.0.0",
-          "metadata": {
-            "_generator": {
-              "name": "bicep",
-              "version": "0.39.26.7824",
-              "templateHash": "4226040742322195727"
-            }
-          },
-          "parameters": {
-            "name": {
-              "type": "string",
-              "metadata": {
-                "description": "Name of the Log Analytics workspace."
-              }
-            },
-            "location": {
-              "type": "string",
-              "metadata": {
-                "description": "Azure region for the resource."
-              }
-            },
-            "tags": {
-              "type": "object",
-              "defaultValue": {},
-              "metadata": {
-                "description": "Resource tags."
-              }
-            }
-          },
-          "resources": [
-            {
-              "type": "Microsoft.OperationalInsights/workspaces",
-              "apiVersion": "2022-10-01",
-              "name": "[parameters('name')]",
-              "location": "[parameters('location')]",
-              "tags": "[parameters('tags')]",
-              "properties": {
-                "sku": {
-                  "name": "PerGB2018"
-                },
-                "retentionInDays": 30,
-                "features": {
-                  "enableLogAccessUsingOnlyResourcePermissions": true
-                },
-                "workspaceCapping": {
-                  "dailyQuotaGb": 1
-                }
-              }
-            }
-          ],
-          "outputs": {
-            "id": {
-              "type": "string",
-              "metadata": {
-                "description": "The resource ID of the Log Analytics workspace."
-              },
-              "value": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('name'))]"
-            },
-            "name": {
-              "type": "string",
-              "metadata": {
-                "description": "The name of the Log Analytics workspace."
-              },
-              "value": "[parameters('name')]"
-            }
-          }
-        }
+        "retentionInDays": 30
       }
     },
     {
-      "type": "Microsoft.Resources/deployments",
-      "apiVersion": "2025-04-01",
-      "name": "appInsights",
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('appInsightsName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "kind": "web",
       "properties": {
-        "expressionEvaluationOptions": {
-          "scope": "inner"
-        },
-        "mode": "Incremental",
-        "parameters": {
-          "name": {
-            "value": "[variables('appInsightsName')]"
-          },
-          "location": {
-            "value": "[parameters('location')]"
-          },
-          "tags": {
-            "value": "[variables('tags')]"
-          },
-          "logAnalyticsWorkspaceId": {
-            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'logAnalytics'), '2025-04-01').outputs.id.value]"
-          }
-        },
-        "template": {
-          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-          "contentVersion": "1.0.0.0",
-          "metadata": {
-            "_generator": {
-              "name": "bicep",
-              "version": "0.39.26.7824",
-              "templateHash": "18443109789675385075"
-            }
-          },
-          "parameters": {
-            "name": {
-              "type": "string",
-              "metadata": {
-                "description": "Name of the Application Insights resource."
-              }
-            },
-            "location": {
-              "type": "string",
-              "metadata": {
-                "description": "Azure region for the resource."
-              }
-            },
-            "tags": {
-              "type": "object",
-              "defaultValue": {},
-              "metadata": {
-                "description": "Resource tags."
-              }
-            },
-            "logAnalyticsWorkspaceId": {
-              "type": "string",
-              "metadata": {
-                "description": "Resource ID of the Log Analytics workspace."
-              }
-            }
-          },
-          "resources": [
-            {
-              "type": "Microsoft.Insights/components",
-              "apiVersion": "2020-02-02",
-              "name": "[parameters('name')]",
-              "location": "[parameters('location')]",
-              "tags": "[parameters('tags')]",
-              "kind": "web",
-              "properties": {
-                "Application_Type": "web",
-                "WorkspaceResourceId": "[parameters('logAnalyticsWorkspaceId')]",
-                "IngestionMode": "LogAnalytics",
-                "publicNetworkAccessForIngestion": "Enabled",
-                "publicNetworkAccessForQuery": "Enabled"
-              }
-            }
-          ],
-          "outputs": {
-            "connectionString": {
-              "type": "string",
-              "metadata": {
-                "description": "The connection string for Application Insights."
-              },
-              "value": "[reference(resourceId('Microsoft.Insights/components', parameters('name')), '2020-02-02').ConnectionString]"
-            },
-            "instrumentationKey": {
-              "type": "string",
-              "metadata": {
-                "description": "The instrumentation key for Application Insights."
-              },
-              "value": "[reference(resourceId('Microsoft.Insights/components', parameters('name')), '2020-02-02').InstrumentationKey]"
-            },
-            "id": {
-              "type": "string",
-              "metadata": {
-                "description": "The resource ID of Application Insights."
-              },
-              "value": "[resourceId('Microsoft.Insights/components', parameters('name'))]"
-            }
-          }
-        }
+        "Application_Type": "web",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Resources/deployments', 'logAnalytics')]"
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]"
       ]
     },
     {
-      "type": "Microsoft.Resources/deployments",
-      "apiVersion": "2025-04-01",
-      "name": "storage",
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('storageAccountName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
       "properties": {
-        "expressionEvaluationOptions": {
-          "scope": "inner"
-        },
-        "mode": "Incremental",
-        "parameters": {
-          "name": {
-            "value": "[variables('storageAccountName')]"
-          },
-          "location": {
-            "value": "[parameters('location')]"
-          },
-          "tags": {
-            "value": "[variables('tags')]"
-          },
-          "contentShareName": {
-            "value": "[variables('contentShareName')]"
-          }
-        },
-        "template": {
-          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-          "contentVersion": "1.0.0.0",
-          "metadata": {
-            "_generator": {
-              "name": "bicep",
-              "version": "0.39.26.7824",
-              "templateHash": "2231690318552988999"
-            }
-          },
-          "parameters": {
-            "name": {
-              "type": "string",
-              "minLength": 3,
-              "maxLength": 24,
-              "metadata": {
-                "description": "Name of the Storage Account."
-              }
-            },
-            "location": {
-              "type": "string",
-              "metadata": {
-                "description": "Azure region for the resource."
-              }
-            },
-            "tags": {
-              "type": "object",
-              "defaultValue": {},
-              "metadata": {
-                "description": "Resource tags."
-              }
-            },
-            "contentShareName": {
-              "type": "string",
-              "metadata": {
-                "description": "Name for the function app content share."
-              }
-            }
-          },
-          "resources": [
-            {
-              "type": "Microsoft.Storage/storageAccounts",
-              "apiVersion": "2023-01-01",
-              "name": "[parameters('name')]",
-              "location": "[parameters('location')]",
-              "tags": "[parameters('tags')]",
-              "sku": {
-                "name": "Standard_LRS"
-              },
-              "kind": "StorageV2",
-              "properties": {
-                "supportsHttpsTrafficOnly": true,
-                "minimumTlsVersion": "TLS1_2",
-                "accessTier": "Hot",
-                "allowBlobPublicAccess": false,
-                "allowSharedKeyAccess": true,
-                "publicNetworkAccess": "Enabled",
-                "networkAcls": {
-                  "defaultAction": "Allow",
-                  "bypass": "AzureServices"
-                }
-              }
-            },
-            {
-              "type": "Microsoft.Storage/storageAccounts/fileServices",
-              "apiVersion": "2023-01-01",
-              "name": "[format('{0}/{1}', parameters('name'), 'default')]",
-              "dependsOn": [
-                "[resourceId('Microsoft.Storage/storageAccounts', parameters('name'))]"
-              ]
-            },
-            {
-              "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
-              "apiVersion": "2023-01-01",
-              "name": "[format('{0}/{1}/{2}', parameters('name'), 'default', parameters('contentShareName'))]",
-              "properties": {
-                "shareQuota": 5120
-              },
-              "dependsOn": [
-                "[resourceId('Microsoft.Storage/storageAccounts/fileServices', parameters('name'), 'default')]"
-              ]
-            }
-          ],
-          "outputs": {
-            "name": {
-              "type": "string",
-              "metadata": {
-                "description": "The name of the Storage Account."
-              },
-              "value": "[parameters('name')]"
-            },
-            "key": {
-              "type": "string",
-              "metadata": {
-                "description": "The primary access key for the Storage Account."
-              },
-              "value": "[listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('name')), '2023-01-01').keys[0].value]"
-            },
-            "id": {
-              "type": "string",
-              "metadata": {
-                "description": "The resource ID of the Storage Account."
-              },
-              "value": "[resourceId('Microsoft.Storage/storageAccounts', parameters('name'))]"
-            },
-            "blobEndpoint": {
-              "type": "string",
-              "metadata": {
-                "description": "The primary blob endpoint."
-              },
-              "value": "[reference(resourceId('Microsoft.Storage/storageAccounts', parameters('name')), '2023-01-01').primaryEndpoints.blob]"
-            }
-          }
+        "supportsHttpsTrafficOnly": true,
+        "minimumTlsVersion": "TLS1_2",
+        "accessTier": "Hot",
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": true,
+        "publicNetworkAccess": "Enabled",
+        "networkAcls": {
+          "defaultAction": "Allow",
+          "bypass": "AzureServices"
         }
       }
     },
     {
-      "type": "Microsoft.Resources/deployments",
-      "apiVersion": "2025-04-01",
-      "name": "appServicePlan",
+      "type": "Microsoft.Storage/storageAccounts/fileServices",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/{1}', variables('storageAccountName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/{1}/{2}', variables('storageAccountName'), 'default', variables('contentShareName'))]",
       "properties": {
-        "expressionEvaluationOptions": {
-          "scope": "inner"
-        },
-        "mode": "Incremental",
-        "parameters": {
-          "name": {
-            "value": "[variables('appServicePlanName')]"
-          },
-          "location": {
-            "value": "[parameters('location')]"
-          },
-          "tags": {
-            "value": "[variables('tags')]"
-          },
-          "sku": {
-            "value": {
-              "name": "Y1",
-              "tier": "Dynamic"
-            }
-          }
-        },
-        "template": {
-          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-          "contentVersion": "1.0.0.0",
-          "metadata": {
-            "_generator": {
-              "name": "bicep",
-              "version": "0.39.26.7824",
-              "templateHash": "12532906643350944491"
-            }
-          },
-          "parameters": {
-            "name": {
-              "type": "string",
-              "metadata": {
-                "description": "Name of the App Service Plan."
-              }
-            },
-            "location": {
-              "type": "string",
-              "metadata": {
-                "description": "Azure region for the resource."
-              }
-            },
-            "tags": {
-              "type": "object",
-              "defaultValue": {},
-              "metadata": {
-                "description": "Resource tags."
-              }
-            },
-            "sku": {
-              "type": "object",
-              "defaultValue": {
-                "name": "Y1",
-                "tier": "Dynamic"
-              },
-              "metadata": {
-                "description": "SKU configuration for the App Service Plan."
-              }
-            }
-          },
-          "resources": [
-            {
-              "type": "Microsoft.Web/serverfarms",
-              "apiVersion": "2022-09-01",
-              "name": "[parameters('name')]",
-              "location": "[parameters('location')]",
-              "tags": "[parameters('tags')]",
-              "kind": "functionapp",
-              "sku": "[parameters('sku')]",
-              "properties": {
-                "reserved": true
-              }
-            }
-          ],
-          "outputs": {
-            "id": {
-              "type": "string",
-              "metadata": {
-                "description": "The resource ID of the App Service Plan."
-              },
-              "value": "[resourceId('Microsoft.Web/serverfarms', parameters('name'))]"
-            },
-            "name": {
-              "type": "string",
-              "metadata": {
-                "description": "The name of the App Service Plan."
-              },
-              "value": "[parameters('name')]"
-            }
-          }
-        }
+        "shareQuota": 5120
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices', variables('storageAccountName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('appServicePlanName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "kind": "linux",
+      "sku": {
+        "name": "Y1",
+        "tier": "Dynamic"
+      },
+      "properties": {
+        "reserved": true
       }
     },
     {
-      "type": "Microsoft.Resources/deployments",
-      "apiVersion": "2025-04-01",
-      "name": "functionApp",
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('functionAppName')]",
+      "location": "[parameters('location')]",
+      "tags": "[union(variables('tags'), createObject('azd-service-name', 'api'))]",
+      "kind": "functionapp,linux",
       "properties": {
-        "expressionEvaluationOptions": {
-          "scope": "inner"
-        },
-        "mode": "Incremental",
-        "parameters": {
-          "name": {
-            "value": "[variables('functionAppName')]"
-          },
-          "location": {
-            "value": "[parameters('location')]"
-          },
-          "tags": {
-            "value": "[variables('tags')]"
-          },
-          "appServicePlanId": {
-            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'appServicePlan'), '2025-04-01').outputs.id.value]"
-          },
-          "storageAccountName": {
-            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'storage'), '2025-04-01').outputs.name.value]"
-          },
-          "storageAccountKey": {
-            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'storage'), '2025-04-01').outputs.key.value]"
-          },
-          "contentShareName": {
-            "value": "[variables('contentShareName')]"
-          },
-          "appInsightsConnectionString": {
-            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'appInsights'), '2025-04-01').outputs.connectionString.value]"
-          },
-          "appInsightsInstrumentationKey": {
-            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'appInsights'), '2025-04-01').outputs.instrumentationKey.value]"
-          }
-        },
-        "template": {
-          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-          "contentVersion": "1.0.0.0",
-          "metadata": {
-            "_generator": {
-              "name": "bicep",
-              "version": "0.39.26.7824",
-              "templateHash": "22433787857189030"
-            }
-          },
-          "parameters": {
-            "name": {
-              "type": "string",
-              "metadata": {
-                "description": "Name of the Function App."
-              }
-            },
-            "location": {
-              "type": "string",
-              "metadata": {
-                "description": "Azure region for the resource."
-              }
-            },
-            "tags": {
-              "type": "object",
-              "defaultValue": {},
-              "metadata": {
-                "description": "Resource tags."
-              }
-            },
-            "appServicePlanId": {
-              "type": "string",
-              "metadata": {
-                "description": "Resource ID of the App Service Plan."
-              }
-            },
-            "storageAccountName": {
-              "type": "string",
-              "metadata": {
-                "description": "Name of the Storage Account."
-              }
-            },
-            "storageAccountKey": {
-              "type": "securestring",
-              "metadata": {
-                "description": "Access key for the Storage Account."
-              }
-            },
-            "appInsightsConnectionString": {
-              "type": "string",
-              "metadata": {
-                "description": "Application Insights connection string."
-              }
-            },
-            "appInsightsInstrumentationKey": {
-              "type": "string",
-              "metadata": {
-                "description": "Application Insights instrumentation key."
-              }
-            },
-            "contentShareName": {
-              "type": "string",
-              "metadata": {
-                "description": "Name of the content share in Azure Files."
-              }
-            }
-          },
-          "resources": [
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "httpsOnly": true,
+        "siteConfig": {
+          "linuxFxVersion": "Python|3.11",
+          "pythonVersion": "3.11",
+          "ftpsState": "Disabled",
+          "minTlsVersion": "1.2",
+          "http20Enabled": true,
+          "appSettings": [
             {
-              "type": "Microsoft.Web/sites",
-              "apiVersion": "2023-01-01",
-              "name": "[parameters('name')]",
-              "location": "[parameters('location')]",
-              "tags": "[union(parameters('tags'), createObject('azd-service-name', 'api'))]",
-              "kind": "functionapp,linux",
-              "properties": {
-                "serverFarmId": "[parameters('appServicePlanId')]",
-                "httpsOnly": true,
-                "siteConfig": {
-                  "linuxFxVersion": "Python|3.11",
-                  "pythonVersion": "3.11",
-                  "ftpsState": "Disabled",
-                  "minTlsVersion": "1.2",
-                  "http20Enabled": true,
-                  "appSettings": [
-                    {
-                      "name": "AzureWebJobsStorage",
-                      "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', parameters('storageAccountName'), parameters('storageAccountKey'))]"
-                    },
-                    {
-                      "name": "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING",
-                      "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', parameters('storageAccountName'), parameters('storageAccountKey'))]"
-                    },
-                    {
-                      "name": "WEBSITE_CONTENTSHARE",
-                      "value": "[parameters('contentShareName')]"
-                    },
-                    {
-                      "name": "FUNCTIONS_EXTENSION_VERSION",
-                      "value": "~4"
-                    },
-                    {
-                      "name": "FUNCTIONS_WORKER_RUNTIME",
-                      "value": "python"
-                    },
-                    {
-                      "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
-                      "value": "[parameters('appInsightsConnectionString')]"
-                    },
-                    {
-                      "name": "APPINSIGHTS_INSTRUMENTATIONKEY",
-                      "value": "[parameters('appInsightsInstrumentationKey')]"
-                    },
-                    {
-                      "name": "SCM_DO_BUILD_DURING_DEPLOYMENT",
-                      "value": "true"
-                    },
-                    {
-                      "name": "ENABLE_ORYX_BUILD",
-                      "value": "true"
-                    }
-                  ]
-                }
-              }
+              "name": "AzureWebJobsStorage",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', variables('storageAccountName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2023-01-01').keys[0].value)]"
+            },
+            {
+              "name": "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', variables('storageAccountName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2023-01-01').keys[0].value)]"
+            },
+            {
+              "name": "WEBSITE_CONTENTSHARE",
+              "value": "[variables('contentShareName')]"
+            },
+            {
+              "name": "FUNCTIONS_EXTENSION_VERSION",
+              "value": "~4"
+            },
+            {
+              "name": "FUNCTIONS_WORKER_RUNTIME",
+              "value": "python"
+            },
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString]"
+            },
+            {
+              "name": "SCM_DO_BUILD_DURING_DEPLOYMENT",
+              "value": "true"
+            },
+            {
+              "name": "ENABLE_ORYX_BUILD",
+              "value": "true"
             }
-          ],
-          "outputs": {
-            "name": {
-              "type": "string",
-              "metadata": {
-                "description": "The name of the Function App."
-              },
-              "value": "[parameters('name')]"
-            },
-            "hostname": {
-              "type": "string",
-              "metadata": {
-                "description": "The default hostname of the Function App."
-              },
-              "value": "[reference(resourceId('Microsoft.Web/sites', parameters('name')), '2023-01-01').defaultHostName]"
-            },
-            "endpoint": {
-              "type": "string",
-              "metadata": {
-                "description": "The endpoint URL of the Function App."
-              },
-              "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', parameters('name')), '2023-01-01').defaultHostName)]"
-            },
-            "id": {
-              "type": "string",
-              "metadata": {
-                "description": "The resource ID of the Function App."
-              },
-              "value": "[resourceId('Microsoft.Web/sites', parameters('name'))]"
-            }
-          }
+          ]
         }
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Resources/deployments', 'appInsights')]",
-        "[resourceId('Microsoft.Resources/deployments', 'appServicePlan')]",
-        "[resourceId('Microsoft.Resources/deployments', 'storage')]"
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', variables('storageAccountName'), 'default', variables('contentShareName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
       ]
     }
   ],
@@ -676,16 +182,16 @@
       "metadata": {
         "description": "The API endpoint URL. Use this to call your CodeRunner instance."
       },
-      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'functionApp'), '2025-04-01').outputs.endpoint.value]"
+      "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2023-01-01').defaultHostName)]"
     },
     "functionAppName": {
       "type": "string",
       "metadata": {
         "description": "The name of the deployed Function App."
       },
-      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'functionApp'), '2025-04-01').outputs.name.value]"
+      "value": "[variables('functionAppName')]"
     },
-    "resourceGroup": {
+    "resourceGroupName": {
       "type": "string",
       "metadata": {
         "description": "The resource group containing all resources."
@@ -695,9 +201,9 @@
     "nextSteps": {
       "type": "string",
       "metadata": {
-        "description": "Next step: Deploy your code using the Azure Functions Core Tools or VS Code."
+        "description": "Next step: Deploy your code using Azure Functions Core Tools."
       },
-      "value": "[format('Run: func azure functionapp publish {0}', reference(resourceId('Microsoft.Resources/deployments', 'functionApp'), '2025-04-01').outputs.name.value)]"
+      "value": "[format('Run: func azure functionapp publish {0}', variables('functionAppName'))]"
     }
   }
 }
