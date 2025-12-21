@@ -1,8 +1,13 @@
 // =============================================================================
-// CodeRunner Infrastructure - One-Click Deployment Template
+// CodeRunner - True One-Click Deployment
 // =============================================================================
 //
-// Uses Managed Identity for secure storage access (no shared keys)
+// Click "Deploy to Azure" → Select subscription/resource group → Done!
+//
+// Features:
+// - Managed Identity for secure storage access (no shared keys)
+// - Auto-deploys code from GitHub release (no CLI needed)
+// - Zero configuration required
 //
 // =============================================================================
 
@@ -126,6 +131,11 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
           name: 'FUNCTIONS_WORKER_RUNTIME'
           value: 'python'
         }
+        // Auto-deploy code from GitHub release - no manual deployment needed!
+        {
+          name: 'WEBSITE_RUN_FROM_PACKAGE'
+          value: 'https://github.com/dembaatmicrosoft/code_runner/releases/download/v1.0.0/deploy.zip'
+        }
       ]
     }
   }
@@ -172,5 +182,5 @@ output apiEndpoint string = 'https://${functionApp.properties.defaultHostName}'
 @description('The Function App name.')
 output functionAppName string = functionApp.name
 
-@description('Next step: Deploy your code.')
-output nextStep string = 'Run: func azure functionapp publish <functionAppName>'
+@description('Your API is ready! No additional deployment steps needed.')
+output status string = 'Deployment complete - API is ready to use'

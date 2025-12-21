@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "13690675189416714206"
+      "templateHash": "1890460390089849909"
     }
   },
   "parameters": {
@@ -127,6 +127,10 @@
             {
               "name": "FUNCTIONS_WORKER_RUNTIME",
               "value": "python"
+            },
+            {
+              "name": "WEBSITE_RUN_FROM_PACKAGE",
+              "value": "https://github.com/dembaatmicrosoft/code_runner/releases/download/v1.0.0/deploy.zip"
             }
           ]
         }
@@ -198,12 +202,12 @@
       },
       "value": "[variables('functionAppName')]"
     },
-    "nextStep": {
+    "status": {
       "type": "string",
       "metadata": {
-        "description": "Next step: Deploy your code."
+        "description": "Your API is ready! No additional deployment steps needed."
       },
-      "value": "Run: func azure functionapp publish <functionAppName>"
+      "value": "Deployment complete - API is ready to use"
     }
   }
 }

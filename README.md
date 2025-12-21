@@ -4,7 +4,7 @@
 
 ![CodeRunner](code_runner_app_lite.png)
 
-A blazing-fast serverless Python execution API. Deploy to Azure in one click, start running code in minutes.
+A blazing-fast serverless Python execution API. One-click deploy to Azure, zero configuration required.
 
 ## Overview
 
@@ -135,21 +135,18 @@ with open("./output/result.csv", "w") as f:
 
 ## Deployment
 
-### One-Click Deployment (Recommended)
+### One-Click Deployment
 
 Click the button below to deploy CodeRunner to your Azure subscription:
 
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fdembaatmicrosoft%2Fcode_runner%2Fmain%2Finfra%2Fazuredeploy.json)
 
-**That's it!** The Azure Portal will:
+**That's it!** No CLI tools, no additional steps. The deployment will:
 1. Create all required resources (Storage, Function App, monitoring)
-2. Configure everything automatically
+2. Deploy the code automatically
 3. Show you the API endpoint when complete
 
-After deployment, deploy your code:
-```bash
-func azure functionapp publish <function-app-name> --python
-```
+Your API will be ready at: `https://<function-app-name>.azurewebsites.net/api/run`
 
 **Cost**: $0/month within Azure Functions free tier (1M executions/month free)
 
