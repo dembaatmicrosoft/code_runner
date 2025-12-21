@@ -55,18 +55,27 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   }
 }
 
-// 3. Storage Account
-resource storageAccount 'Microsoft.Storage/storageAccounts@2022-05-01' = {
+// 3. Storage Account - explicit permissive settings to avoid 403
+resource storageAccount 'Microsoft.Storage/storageAccounts@2022-09-01' = {
   name: storageAccountName
   location: location
   tags: tags
   sku: {
     name: 'Standard_LRS'
   }
-  kind: 'Storage'
+  kind: 'StorageV2'
   properties: {
     supportsHttpsTrafficOnly: true
-    defaultToOAuthAuthentication: true
+    allowSharedKeyAccess: true
+    allowBlobPublicAccess: true
+    publicNetworkAccess: 'Enabled'
+    minimumTlsVersion: 'TLS1_2'
+    networkAcls: {
+      bypass: 'AzureServices'
+      defaultAction: 'Allow'
+      ipRules: []
+      virtualNetworkRules: []
+    }
   }
 }
 
