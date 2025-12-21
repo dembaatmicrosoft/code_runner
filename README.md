@@ -1,8 +1,10 @@
 # CodeRunner
 
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fdembaatmicrosoft%2Fcode_runner%2Fmain%2Finfra%2Fazuredeploy.json)
+
 ![CodeRunner](code_runner_app_lite.png)
 
-A serverless Azure Function for executing Python scripts in isolated subprocesses with support for input/output files.
+A blazing-fast serverless Python execution API. Deploy to Azure in one click, start running code in minutes.
 
 ## Overview
 
@@ -133,32 +135,39 @@ with open("./output/result.csv", "w") as f:
 
 ## Deployment
 
-### One-Command Deployment (Recommended)
+### One-Click Deployment (Recommended)
 
-Deploy to Azure with a single command using [Azure Developer CLI](https://aka.ms/azd-install):
+Click the button below to deploy CodeRunner to your Azure subscription:
 
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fdembaatmicrosoft%2Fcode_runner%2Fmain%2Finfra%2Fazuredeploy.json)
+
+**That's it!** The Azure Portal will:
+1. Create all required resources (Storage, Function App, monitoring)
+2. Configure everything automatically
+3. Show you the API endpoint when complete
+
+After deployment, deploy your code:
 ```bash
-# Install Azure Developer CLI (if not already installed)
-# Windows: winget install microsoft.azd
-# macOS: brew install azure-dev
-# Linux: curl -fsSL https://aka.ms/install-azd.sh | bash
-
-# Login to Azure
-azd auth login
-
-# Deploy everything (infrastructure + code)
-azd up
+func azure functionapp publish <function-app-name> --python
 ```
-
-That's it! The `azd up` command will:
-1. Provision all Azure resources (Resource Group, Storage, Function App, monitoring)
-2. Build and package the application
-3. Deploy the code to Azure
-4. Output the API endpoint URL
 
 **Cost**: $0/month within Azure Functions free tier (1M executions/month free)
 
-### Other Deployment Options
+### Alternative Deployment Options
+
+<details>
+<summary>Azure Developer CLI</summary>
+
+```bash
+# Install Azure Developer CLI
+curl -fsSL https://aka.ms/install-azd.sh | bash
+
+# Login and deploy
+azd auth login
+azd up
+```
+
+</details>
 
 <details>
 <summary>Azure Functions Core Tools</summary>
@@ -186,7 +195,7 @@ az functionapp create \
   --functions-version 4 \
   --os-type Linux
 
-# Deploy
+# Deploy code
 func azure functionapp publish <app-name> --python
 ```
 
@@ -195,17 +204,14 @@ func azure functionapp publish <app-name> --python
 ### Managing Your Deployment
 
 ```bash
-# View deployment status
-azd show
-
-# Redeploy after code changes
-azd deploy
-
 # View logs
-azd monitor
+az functionapp log tail --name <function-app-name> --resource-group <resource-group>
 
-# Tear down all resources
-azd down
+# Restart function app
+az functionapp restart --name <function-app-name> --resource-group <resource-group>
+
+# Delete all resources
+az group delete --name <resource-group>
 ```
 
 ## Security

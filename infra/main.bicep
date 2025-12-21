@@ -1,9 +1,10 @@
 // =============================================================================
-// CodeRunner Infrastructure - Main Bicep Template
+// CodeRunner Infrastructure - One-Click Deployment Template
 // =============================================================================
 //
+// Deploy with the "Deploy to Azure" button - no CLI required!
+//
 // This template provisions all Azure resources required for CodeRunner:
-//   - Resource Group (created at subscription scope)
 //   - Storage Account (for function app state)
 //   - App Service Plan (Consumption tier - FREE)
 //   - Function App (Python 3.11, Linux)
@@ -16,69 +17,42 @@
 //
 // =============================================================================
 
-targetScope = 'subscription'
+// Deploy to the resource group selected in the Azure Portal
+// No subscription-level permissions required!
 
 // ---------------------------------------------------------------------------
 // Parameters
 // ---------------------------------------------------------------------------
 
-@minLength(1)
-@maxLength(64)
-@description('Name of the environment (e.g., dev, prod). Used for resource naming.')
-param environmentName string
-
-@minLength(1)
-@description('Azure region for all resources.')
-param location string
-
-@description('Name of the Azure Function App. Auto-generated if not provided.')
-param functionAppName string = ''
-
-@description('Name of the Storage Account. Auto-generated if not provided.')
-param storageAccountName string = ''
-
-@description('Principal ID of the user or service principal deploying the infrastructure.')
-param principalId string = ''
+@description('Location for all resources. Defaults to the resource group location.')
+param location string = resourceGroup().location
 
 // ---------------------------------------------------------------------------
 // Variables
 // ---------------------------------------------------------------------------
 
-// Generate unique suffix for resource names
-var resourceToken = toLower(uniqueString(subscription().id, environmentName, location))
+// Generate unique suffix based on resource group - ensures unique names
+var resourceToken = toLower(uniqueString(resourceGroup().id))
 
-// Resource names with sensible defaults
-var abbrs = loadJsonContent('./abbreviations.json')
+// Resource naming
+var functionAppName = 'coderunner-${resourceToken}'
+var storageAccountName = 'crstore${resourceToken}'
+var appServicePlanName = 'asp-coderunner-${resourceToken}'
+var logAnalyticsName = 'log-coderunner-${resourceToken}'
+var appInsightsName = 'appi-coderunner-${resourceToken}'
+
 var tags = {
-  'azd-env-name': environmentName
-  'project': 'code-runner'
-}
-
-// Actual resource names
-var actualFunctionAppName = !empty(functionAppName) ? functionAppName : '${abbrs.webSitesFunctions}${resourceToken}'
-var actualStorageAccountName = !empty(storageAccountName) ? storageAccountName : '${abbrs.storageStorageAccounts}${resourceToken}'
-var appServicePlanName = '${abbrs.webServerFarms}${resourceToken}'
-var logAnalyticsName = '${abbrs.operationalInsightsWorkspaces}${resourceToken}'
-var appInsightsName = '${abbrs.insightsComponents}${resourceToken}'
-
-// ---------------------------------------------------------------------------
-// Resource Group
-// ---------------------------------------------------------------------------
-
-resource rg 'Microsoft.Resources/resourceGroups@2022-09-01' = {
-  name: 'rg-${environmentName}'
-  location: location
-  tags: tags
+  project: 'code-runner'
+  deployedBy: 'one-click-deploy'
 }
 
 // ---------------------------------------------------------------------------
-// Modules
+// Resources
 // ---------------------------------------------------------------------------
 
 // Log Analytics Workspace for monitoring
 module logAnalytics 'modules/log-analytics.bicep' = {
   name: 'logAnalytics'
-  scope: rg
   params: {
     name: logAnalyticsName
     location: location
@@ -89,7 +63,6 @@ module logAnalytics 'modules/log-analytics.bicep' = {
 // Application Insights for function monitoring
 module appInsights 'modules/app-insights.bicep' = {
   name: 'appInsights'
-  scope: rg
   params: {
     name: appInsightsName
     location: location
@@ -101,9 +74,8 @@ module appInsights 'modules/app-insights.bicep' = {
 // Storage Account for function app
 module storage 'modules/storage.bicep' = {
   name: 'storage'
-  scope: rg
   params: {
-    name: actualStorageAccountName
+    name: storageAccountName
     location: location
     tags: tags
   }
@@ -112,7 +84,6 @@ module storage 'modules/storage.bicep' = {
 // App Service Plan (Consumption tier - FREE)
 module appServicePlan 'modules/app-service-plan.bicep' = {
   name: 'appServicePlan'
-  scope: rg
   params: {
     name: appServicePlanName
     location: location
@@ -127,9 +98,8 @@ module appServicePlan 'modules/app-service-plan.bicep' = {
 // Function App
 module functionApp 'modules/function-app.bicep' = {
   name: 'functionApp'
-  scope: rg
   params: {
-    name: actualFunctionAppName
+    name: functionAppName
     location: location
     tags: tags
     appServicePlanId: appServicePlan.outputs.id
@@ -141,17 +111,17 @@ module functionApp 'modules/function-app.bicep' = {
 }
 
 // ---------------------------------------------------------------------------
-// Outputs
+// Outputs - Shown in Azure Portal after deployment
 // ---------------------------------------------------------------------------
 
-@description('The name of the Azure resource group.')
-output AZURE_RESOURCE_GROUP string = rg.name
+@description('The API endpoint URL. Use this to call your CodeRunner instance.')
+output apiEndpoint string = functionApp.outputs.endpoint
 
-@description('The name of the Azure Function App.')
-output AZURE_FUNCTION_APP_NAME string = functionApp.outputs.name
+@description('The name of the deployed Function App.')
+output functionAppName string = functionApp.outputs.name
 
-@description('The endpoint URL of the CodeRunner API.')
-output SERVICE_API_ENDPOINT_URL string = functionApp.outputs.endpoint
+@description('The resource group containing all resources.')
+output resourceGroup string = resourceGroup().name
 
-@description('The Azure region where resources are deployed.')
-output AZURE_LOCATION string = location
+@description('Next step: Deploy your code using the Azure Functions Core Tools or VS Code.')
+output nextSteps string = 'Run: func azure functionapp publish ${functionApp.outputs.name}'
