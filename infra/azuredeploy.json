@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "17117751103746498065"
+      "templateHash": "6895215702387214400"
     }
   },
   "parameters": {
@@ -20,14 +20,12 @@
   "variables": {
     "resourceToken": "[toLower(uniqueString(resourceGroup().id))]",
     "functionAppName": "[format('coderunner-{0}', variables('resourceToken'))]",
-    "storageAccountName": "[format('crstore{0}', variables('resourceToken'))]",
-    "contentShareName": "[format('coderunner-{0}', variables('resourceToken'))]",
-    "appServicePlanName": "[format('asp-coderunner-{0}', variables('resourceToken'))]",
-    "logAnalyticsName": "[format('log-coderunner-{0}', variables('resourceToken'))]",
-    "appInsightsName": "[format('appi-coderunner-{0}', variables('resourceToken'))]",
+    "storageAccountName": "[format('st{0}', variables('resourceToken'))]",
+    "appServicePlanName": "[format('asp-{0}', variables('resourceToken'))]",
+    "logAnalyticsName": "[format('log-{0}', variables('resourceToken'))]",
+    "appInsightsName": "[format('ai-{0}', variables('resourceToken'))]",
     "tags": {
-      "project": "code-runner",
-      "deployedBy": "one-click-deploy"
+      "project": "code-runner"
     }
   },
   "resources": [
@@ -61,37 +59,30 @@
     },
     {
       "type": "Microsoft.Storage/storageAccounts",
-      "apiVersion": "2023-01-01",
+      "apiVersion": "2022-05-01",
       "name": "[variables('storageAccountName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('tags')]",
       "sku": {
         "name": "Standard_LRS"
       },
-      "kind": "StorageV2",
+      "kind": "Storage",
       "properties": {
         "supportsHttpsTrafficOnly": true,
-        "minimumTlsVersion": "TLS1_2",
-        "accessTier": "Hot",
-        "allowBlobPublicAccess": false,
-        "allowSharedKeyAccess": true,
-        "publicNetworkAccess": "Enabled",
-        "networkAcls": {
-          "defaultAction": "Allow",
-          "bypass": "AzureServices"
-        }
+        "defaultToOAuthAuthentication": true
       }
     },
     {
       "type": "Microsoft.Web/serverfarms",
-      "apiVersion": "2023-01-01",
+      "apiVersion": "2022-03-01",
       "name": "[variables('appServicePlanName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('tags')]",
-      "kind": "linux",
       "sku": {
         "name": "Y1",
-        "tier": "Dynamic"
+        "tier": "Dynamic",
+        "size": "Y1",
+        "family": "Y"
       },
       "properties": {
         "reserved": true
@@ -99,32 +90,32 @@
     },
     {
       "type": "Microsoft.Web/sites",
-      "apiVersion": "2023-01-01",
+      "apiVersion": "2022-03-01",
       "name": "[variables('functionAppName')]",
       "location": "[parameters('location')]",
-      "tags": "[union(variables('tags'), createObject('azd-service-name', 'api'))]",
+      "tags": "[variables('tags')]",
       "kind": "functionapp,linux",
       "properties": {
+        "reserved": true,
         "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
-        "httpsOnly": true,
         "siteConfig": {
           "linuxFxVersion": "Python|3.11",
-          "pythonVersion": "3.11",
-          "ftpsState": "Disabled",
-          "minTlsVersion": "1.2",
-          "http20Enabled": true,
           "appSettings": [
             {
+              "name": "APPINSIGHTS_INSTRUMENTATIONKEY",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').InstrumentationKey]"
+            },
+            {
               "name": "AzureWebJobsStorage",
-              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', variables('storageAccountName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2023-01-01').keys[0].value)]"
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};EndpointSuffix={1};AccountKey={2}', variables('storageAccountName'), environment().suffixes.storage, listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2022-05-01').keys[0].value)]"
             },
             {
               "name": "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING",
-              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', variables('storageAccountName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2023-01-01').keys[0].value)]"
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};EndpointSuffix={1};AccountKey={2}', variables('storageAccountName'), environment().suffixes.storage, listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2022-05-01').keys[0].value)]"
             },
             {
               "name": "WEBSITE_CONTENTSHARE",
-              "value": "[variables('contentShareName')]"
+              "value": "[toLower(variables('functionAppName'))]"
             },
             {
               "name": "FUNCTIONS_EXTENSION_VERSION",
@@ -133,21 +124,10 @@
             {
               "name": "FUNCTIONS_WORKER_RUNTIME",
               "value": "python"
-            },
-            {
-              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
-              "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString]"
-            },
-            {
-              "name": "SCM_DO_BUILD_DURING_DEPLOYMENT",
-              "value": "true"
-            },
-            {
-              "name": "ENABLE_ORYX_BUILD",
-              "value": "true"
             }
           ]
-        }
+        },
+        "httpsOnly": true
       },
       "dependsOn": [
         "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
@@ -160,30 +140,23 @@
     "apiEndpoint": {
       "type": "string",
       "metadata": {
-        "description": "The API endpoint URL. Use this to call your CodeRunner instance."
+        "description": "The API endpoint URL."
       },
-      "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2023-01-01').defaultHostName)]"
+      "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2022-03-01').defaultHostName)]"
     },
     "functionAppName": {
       "type": "string",
       "metadata": {
-        "description": "The name of the deployed Function App."
+        "description": "The Function App name."
       },
       "value": "[variables('functionAppName')]"
     },
-    "resourceGroupName": {
+    "nextStep": {
       "type": "string",
       "metadata": {
-        "description": "The resource group containing all resources."
+        "description": "Next step: Deploy your code."
       },
-      "value": "[resourceGroup().name]"
-    },
-    "nextSteps": {
-      "type": "string",
-      "metadata": {
-        "description": "Next step: Deploy your code using Azure Functions Core Tools."
-      },
-      "value": "[format('Run: func azure functionapp publish {0}', variables('functionAppName'))]"
+      "value": "Run: func azure functionapp publish <functionAppName>"
     }
   }
 }
