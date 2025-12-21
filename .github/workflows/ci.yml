@@ -1,0 +1,79 @@
+# =============================================================================
+# CodeRunner CI/CD Pipeline
+# =============================================================================
+#
+# This workflow runs on every push and pull request to ensure code quality.
+#
+# Jobs:
+#   - test: Run unit tests and linting
+#   - validate: Validate Bicep infrastructure templates
+#
+# For deployment to Azure, use `azd up` locally or set up Azure credentials
+# for automated deployment (see azure-deploy.yml.example).
+#
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Run tests
+        run: |
+          pytest test_function_app.py -v --cov=function_app --cov-report=term-missing
+
+      - name: Check code style
+        run: |
+          pip install flake8
+          flake8 function_app.py --max-line-length=120 --ignore=E501,W503
+
+  validate-infrastructure:
+    name: Validate Infrastructure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Azure CLI
+        uses: azure/cli@v2
+        with:
+          azcliversion: latest
+          inlineScript: |
+            az bicep install
+
+      - name: Validate Bicep templates
+        run: |
+          echo "Validating main.bicep..."
+          az bicep build --file infra/main.bicep --stdout > /dev/null
+          echo "✅ main.bicep is valid"
+
+          for f in infra/modules/*.bicep; do
+            echo "Validating $f..."
+            az bicep build --file "$f" --stdout > /dev/null
+            echo "✅ $(basename $f) is valid"
+          done

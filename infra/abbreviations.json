@@ -1,0 +1,7 @@
+{
+  "insightsComponents": "appi-",
+  "operationalInsightsWorkspaces": "log-",
+  "storageStorageAccounts": "st",
+  "webServerFarms": "plan-",
+  "webSitesFunctions": "func-"
+}

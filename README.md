@@ -133,13 +133,44 @@ with open("./output/result.csv", "w") as f:
 
 ## Deployment
 
-### Azure Functions Core Tools
+### One-Command Deployment (Recommended)
+
+Deploy to Azure with a single command using [Azure Developer CLI](https://aka.ms/azd-install):
+
+```bash
+# Install Azure Developer CLI (if not already installed)
+# Windows: winget install microsoft.azd
+# macOS: brew install azure-dev
+# Linux: curl -fsSL https://aka.ms/install-azd.sh | bash
+
+# Login to Azure
+azd auth login
+
+# Deploy everything (infrastructure + code)
+azd up
+```
+
+That's it! The `azd up` command will:
+1. Provision all Azure resources (Resource Group, Storage, Function App, monitoring)
+2. Build and package the application
+3. Deploy the code to Azure
+4. Output the API endpoint URL
+
+**Cost**: $0/month within Azure Functions free tier (1M executions/month free)
+
+### Other Deployment Options
+
+<details>
+<summary>Azure Functions Core Tools</summary>
 
 ```bash
 func azure functionapp publish <your-function-app-name> --python
 ```
 
-### Azure CLI
+</details>
+
+<details>
+<summary>Azure CLI (Manual)</summary>
 
 ```bash
 # Create resources
@@ -151,12 +182,30 @@ az functionapp create \
   --storage-account <storage-name> \
   --consumption-plan-location <location> \
   --runtime python \
-  --runtime-version 3.10 \
+  --runtime-version 3.11 \
   --functions-version 4 \
   --os-type Linux
 
 # Deploy
 func azure functionapp publish <app-name> --python
+```
+
+</details>
+
+### Managing Your Deployment
+
+```bash
+# View deployment status
+azd show
+
+# Redeploy after code changes
+azd deploy
+
+# View logs
+azd monitor
+
+# Tear down all resources
+azd down
 ```
 
 ## Security

@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+# =============================================================================
+# CodeRunner - Azure Developer CLI Configuration
+# =============================================================================
+#
+# This file configures the Azure Developer CLI (azd) for one-command deployment.
+#
+# Quick Start:
+#   1. Install azd: https://aka.ms/azd-install
+#   2. Run: azd auth login
+#   3. Run: azd up
+#
+# The 'azd up' command will:
+#   - Provision all Azure resources (Resource Group, Storage, Function App)
+#   - Build and deploy the CodeRunner function
+#   - Output the API endpoint URL
+#
+# Estimated cost: $0/month (Azure Functions Consumption plan free tier)
+# =============================================================================
+
+name: code-runner
+metadata:
+  template: code-runner@1.0.0
+
+services:
+  api:
+    # The CodeRunner Azure Function service
+    project: .
+    language: python
+    host: function
+
+# Infrastructure configuration
+infra:
+  provider: bicep
+  path: infra
+
+# Hooks for custom build/deploy steps
+hooks:
+  # Ensure dependencies are installed before packaging
+  prepackage:
+    shell: sh
+    run: pip install -r requirements.txt -t .python_packages/lib/site-packages --quiet
+    continueOnError: false
