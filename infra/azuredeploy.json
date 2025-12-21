@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "10494901301753094679"
+      "templateHash": "15721938981440942284"
     }
   },
   "parameters": {
@@ -254,7 +254,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.39.26.7824",
-              "templateHash": "17303656277350494289"
+              "templateHash": "6398537952773766185"
             }
           },
           "parameters": {
@@ -296,7 +296,12 @@
                 "minimumTlsVersion": "TLS1_2",
                 "accessTier": "Hot",
                 "allowBlobPublicAccess": false,
-                "allowSharedKeyAccess": true
+                "allowSharedKeyAccess": true,
+                "publicNetworkAccess": "Enabled",
+                "networkAcls": {
+                  "defaultAction": "Allow",
+                  "bypass": "AzureServices"
+                }
               }
             }
           ],
