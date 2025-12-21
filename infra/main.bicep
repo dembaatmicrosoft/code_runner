@@ -173,14 +173,14 @@ resource storageFileDataContributorRole 'Microsoft.Authorization/roleAssignments
 }
 
 // ---------------------------------------------------------------------------
-// Outputs
+// Outputs - These appear in Azure Portal after deployment completes
 // ---------------------------------------------------------------------------
 
-@description('The API endpoint URL.')
-output apiEndpoint string = 'https://${functionApp.properties.defaultHostName}'
+@description('The API endpoint. POST your Python scripts here.')
+output apiEndpoint string = 'https://${functionApp.properties.defaultHostName}/api/run'
 
-@description('The Function App name.')
+@description('Test command. Copy and run in your terminal.')
+output testCommand string = 'curl -X POST "https://${functionApp.properties.defaultHostName}/api/run" -H "Content-Type: application/json" -d \'{"script": "print(1+1)"}\''
+
+@description('Function App resource name for Azure CLI commands.')
 output functionAppName string = functionApp.name
-
-@description('Your API is ready! No additional deployment steps needed.')
-output status string = 'Deployment complete - API is ready to use'

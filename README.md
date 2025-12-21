@@ -141,12 +141,24 @@ Click the button below to deploy CodeRunner to your Azure subscription:
 
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fdembaatmicrosoft%2Fcode_runner%2Fmain%2Finfra%2Fazuredeploy.json)
 
-**That's it!** No CLI tools, no additional steps. The deployment will:
-1. Create all required resources (Storage, Function App, monitoring)
-2. Deploy the code automatically
-3. Show you the API endpoint when complete
+**That's it!** No CLI tools, no additional steps.
 
-Your API will be ready at: `https://<function-app-name>.azurewebsites.net/api/run`
+#### After Deployment Completes (~2 minutes):
+
+1. Look for **"Your deployment is complete"** message
+2. Click **Outputs** in the left sidebar
+3. Copy `apiEndpoint` - this is your API URL
+4. Copy `testCommand` - paste in terminal to verify
+
+```bash
+# Example test (replace with your actual endpoint from Outputs):
+curl -X POST "https://coderunner-xxx.azurewebsites.net/api/run" \
+  -H "Content-Type: application/json" \
+  -d '{"script": "print(1+1)"}'
+
+# Expected response:
+# {"exit_code": 0, "stdout": "2\n", "stderr": "", "artifacts": {}}
+```
 
 **Cost**: $0/month within Azure Functions free tier (1M executions/month free)
 

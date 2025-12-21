@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "1890460390089849909"
+      "templateHash": "6079838884696327806"
     }
   },
   "parameters": {
@@ -191,23 +191,23 @@
     "apiEndpoint": {
       "type": "string",
       "metadata": {
-        "description": "The API endpoint URL."
+        "description": "The API endpoint. POST your Python scripts here."
       },
-      "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2023-01-01').defaultHostName)]"
+      "value": "[format('https://{0}/api/run', reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2023-01-01').defaultHostName)]"
+    },
+    "testCommand": {
+      "type": "string",
+      "metadata": {
+        "description": "Test command. Copy and run in your terminal."
+      },
+      "value": "[format('curl -X POST \"https://{0}/api/run\" -H \"Content-Type: application/json\" -d ''{{\"script\": \"print(1+1)\"}}''', reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2023-01-01').defaultHostName)]"
     },
     "functionAppName": {
       "type": "string",
       "metadata": {
-        "description": "The Function App name."
+        "description": "Function App resource name for Azure CLI commands."
       },
       "value": "[variables('functionAppName')]"
-    },
-    "status": {
-      "type": "string",
-      "metadata": {
-        "description": "Your API is ready! No additional deployment steps needed."
-      },
-      "value": "Deployment complete - API is ready to use"
     }
   }
 }
