@@ -37,6 +37,7 @@ var resourceToken = toLower(uniqueString(resourceGroup().id))
 // Resource naming
 var functionAppName = 'coderunner-${resourceToken}'
 var storageAccountName = 'crstore${resourceToken}'
+var contentShareName = 'coderunner-content'
 var appServicePlanName = 'asp-coderunner-${resourceToken}'
 var logAnalyticsName = 'log-coderunner-${resourceToken}'
 var appInsightsName = 'appi-coderunner-${resourceToken}'
@@ -78,6 +79,7 @@ module storage 'modules/storage.bicep' = {
     name: storageAccountName
     location: location
     tags: tags
+    contentShareName: contentShareName
   }
 }
 
@@ -95,7 +97,7 @@ module appServicePlan 'modules/app-service-plan.bicep' = {
   }
 }
 
-// Function App
+// Function App (depends on storage to ensure file share exists)
 module functionApp 'modules/function-app.bicep' = {
   name: 'functionApp'
   params: {
@@ -105,6 +107,7 @@ module functionApp 'modules/function-app.bicep' = {
     appServicePlanId: appServicePlan.outputs.id
     storageAccountName: storage.outputs.name
     storageAccountKey: storage.outputs.key
+    contentShareName: contentShareName
     appInsightsConnectionString: appInsights.outputs.connectionString
     appInsightsInstrumentationKey: appInsights.outputs.instrumentationKey
   }

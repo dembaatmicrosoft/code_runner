@@ -34,7 +34,10 @@ param appInsightsConnectionString string
 @description('Application Insights instrumentation key.')
 param appInsightsInstrumentationKey string
 
-resource functionApp 'Microsoft.Web/sites@2022-09-01' = {
+@description('Name of the content share in Azure Files.')
+param contentShareName string
+
+resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
   name: name
   location: location
   tags: union(tags, {
@@ -61,7 +64,7 @@ resource functionApp 'Microsoft.Web/sites@2022-09-01' = {
         }
         {
           name: 'WEBSITE_CONTENTSHARE'
-          value: toLower(name)
+          value: contentShareName
         }
         {
           name: 'FUNCTIONS_EXTENSION_VERSION'

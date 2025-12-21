@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "15721938981440942284"
+      "templateHash": "15258542845486662325"
     }
   },
   "parameters": {
@@ -21,6 +21,7 @@
     "resourceToken": "[toLower(uniqueString(resourceGroup().id))]",
     "functionAppName": "[format('coderunner-{0}', variables('resourceToken'))]",
     "storageAccountName": "[format('crstore{0}', variables('resourceToken'))]",
+    "contentShareName": "coderunner-content",
     "appServicePlanName": "[format('asp-coderunner-{0}', variables('resourceToken'))]",
     "logAnalyticsName": "[format('log-coderunner-{0}', variables('resourceToken'))]",
     "appInsightsName": "[format('appi-coderunner-{0}', variables('resourceToken'))]",
@@ -245,6 +246,9 @@
           },
           "tags": {
             "value": "[variables('tags')]"
+          },
+          "contentShareName": {
+            "value": "[variables('contentShareName')]"
           }
         },
         "template": {
@@ -254,7 +258,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.39.26.7824",
-              "templateHash": "6398537952773766185"
+              "templateHash": "2231690318552988999"
             }
           },
           "parameters": {
@@ -277,6 +281,12 @@
               "defaultValue": {},
               "metadata": {
                 "description": "Resource tags."
+              }
+            },
+            "contentShareName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name for the function app content share."
               }
             }
           },
@@ -303,6 +313,25 @@
                   "bypass": "AzureServices"
                 }
               }
+            },
+            {
+              "type": "Microsoft.Storage/storageAccounts/fileServices",
+              "apiVersion": "2023-01-01",
+              "name": "[format('{0}/{1}', parameters('name'), 'default')]",
+              "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts', parameters('name'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+              "apiVersion": "2023-01-01",
+              "name": "[format('{0}/{1}/{2}', parameters('name'), 'default', parameters('contentShareName'))]",
+              "properties": {
+                "shareQuota": 5120
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts/fileServices', parameters('name'), 'default')]"
+              ]
             }
           ],
           "outputs": {
@@ -466,6 +495,9 @@
           "storageAccountKey": {
             "value": "[reference(resourceId('Microsoft.Resources/deployments', 'storage'), '2025-04-01').outputs.key.value]"
           },
+          "contentShareName": {
+            "value": "[variables('contentShareName')]"
+          },
           "appInsightsConnectionString": {
             "value": "[reference(resourceId('Microsoft.Resources/deployments', 'appInsights'), '2025-04-01').outputs.connectionString.value]"
           },
@@ -480,7 +512,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.39.26.7824",
-              "templateHash": "4579184517267196431"
+              "templateHash": "22433787857189030"
             }
           },
           "parameters": {
@@ -532,12 +564,18 @@
               "metadata": {
                 "description": "Application Insights instrumentation key."
               }
+            },
+            "contentShareName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name of the content share in Azure Files."
+              }
             }
           },
           "resources": [
             {
               "type": "Microsoft.Web/sites",
-              "apiVersion": "2022-09-01",
+              "apiVersion": "2023-01-01",
               "name": "[parameters('name')]",
               "location": "[parameters('location')]",
               "tags": "[union(parameters('tags'), createObject('azd-service-name', 'api'))]",
@@ -562,7 +600,7 @@
                     },
                     {
                       "name": "WEBSITE_CONTENTSHARE",
-                      "value": "[toLower(parameters('name'))]"
+                      "value": "[parameters('contentShareName')]"
                     },
                     {
                       "name": "FUNCTIONS_EXTENSION_VERSION",
@@ -606,14 +644,14 @@
               "metadata": {
                 "description": "The default hostname of the Function App."
               },
-              "value": "[reference(resourceId('Microsoft.Web/sites', parameters('name')), '2022-09-01').defaultHostName]"
+              "value": "[reference(resourceId('Microsoft.Web/sites', parameters('name')), '2023-01-01').defaultHostName]"
             },
             "endpoint": {
               "type": "string",
               "metadata": {
                 "description": "The endpoint URL of the Function App."
               },
-              "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', parameters('name')), '2022-09-01').defaultHostName)]"
+              "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', parameters('name')), '2023-01-01').defaultHostName)]"
             },
             "id": {
               "type": "string",
