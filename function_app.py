@@ -509,7 +509,7 @@ app = func.FunctionApp()
 
 
 @app.function_name(name="RunPythonScript")
-@app.route(route="run", methods=["POST"], auth_level=func.AuthLevel.FUNCTION)
+@app.route(route="run", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
 def run_script(req: func.HttpRequest) -> func.HttpResponse:
     """Execute user-supplied Python code and return exit_code/stdout/stderr/artifacts."""
     start_time = time.time()
