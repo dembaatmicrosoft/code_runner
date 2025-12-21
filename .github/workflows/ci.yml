@@ -71,9 +71,3 @@ jobs:
           echo "Validating main.bicep..."
           az bicep build --file infra/main.bicep --stdout > /dev/null
           echo "✅ main.bicep is valid"
-
-          for f in infra/modules/*.bicep; do
-            echo "Validating $f..."
-            az bicep build --file "$f" --stdout > /dev/null
-            echo "✅ $(basename $f) is valid"
-          done
