@@ -34,9 +34,19 @@ var storageBlobDataOwnerRoleId = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
 var storageAccountContributorRoleId = '17d1049b-9a84-46fb-8f53-869881c3d3ab'
 var storageFileDataPrivilegedContributorRoleId = '69566ab7-960f-475b-8e7c-b3118f30c6bd'
 
+// Deployment package URL
+var deployPackageUrl = 'https://github.com/dembaatmicrosoft/code_runner/releases/download/v1.0.0/deploy.zip'
+
 // ---------------------------------------------------------------------------
 // Resources
 // ---------------------------------------------------------------------------
+
+// 0. User-Assigned Managed Identity for deployment script
+resource deploymentIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-deploy-${resourceToken}'
+  location: location
+  tags: tags
+}
 
 // 1. Log Analytics Workspace
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
@@ -79,23 +89,23 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
 }
 
-// 4. App Service Plan (Consumption)
-resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
+// 4. App Service Plan (Flex Consumption)
+resource appServicePlan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: appServicePlanName
   location: location
   tags: tags
   sku: {
-    name: 'Y1'
-    tier: 'Dynamic'
+    name: 'FC1'
+    tier: 'FlexConsumption'
   }
-  kind: 'linux'
+  kind: 'functionapp'
   properties: {
     reserved: true
   }
 }
 
-// 5. Function App with System-Assigned Managed Identity
-resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
+// 5. Function App with System-Assigned Managed Identity (Flex Consumption)
+resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
   name: functionAppName
   location: location
   tags: tags
@@ -108,7 +118,6 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
     serverFarmId: appServicePlan.id
     httpsOnly: true
     siteConfig: {
-      linuxFxVersion: 'Python|3.11'
       appSettings: [
         {
           name: 'APPINSIGHTS_INSTRUMENTATIONKEY'
@@ -118,32 +127,95 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
           name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
           value: appInsights.properties.ConnectionString
         }
-        // Use identity-based connection (no shared key)
         {
           name: 'AzureWebJobsStorage__accountName'
           value: storageAccount.name
         }
-        {
-          name: 'FUNCTIONS_EXTENSION_VERSION'
-          value: '~4'
-        }
-        {
-          name: 'FUNCTIONS_WORKER_RUNTIME'
-          value: 'python'
-        }
-        // Run directly from external package (no content share needed)
-        {
-          name: 'WEBSITE_RUN_FROM_PACKAGE'
-          value: 'https://github.com/dembaatmicrosoft/code_runner/releases/download/v1.0.0/deploy.zip'
-        }
-        // Skip content share validation for external package
-        {
-          name: 'WEBSITE_SKIP_CONTENTSHARE_VALIDATION'
-          value: '1'
-        }
       ]
     }
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storageAccount.properties.primaryEndpoints.blob}deployments'
+          authentication: {
+            type: 'SystemAssignedIdentity'
+          }
+        }
+      }
+      scaleAndConcurrency: {
+        maximumInstanceCount: 100
+        instanceMemoryMB: 2048
+      }
+      runtime: {
+        name: 'python'
+        version: '3.11'
+      }
+    }
   }
+  dependsOn: [
+    deployCode
+  ]
+}
+
+// 5b. Blob container for deployment packages
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
+  parent: storageAccount
+  name: 'default'
+}
+
+resource deploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
+  parent: blobService
+  name: 'deployments'
+}
+
+// 5c. Role assignment for deployment script identity
+resource deployIdentityBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAccount.id, deploymentIdentity.id, storageBlobDataOwnerRoleId)
+  scope: storageAccount
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataOwnerRoleId)
+    principalId: deploymentIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// 5d. Deployment script to upload code package to blob storage
+resource deployCode 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
+  name: 'deploy-code-${resourceToken}'
+  location: location
+  tags: tags
+  kind: 'AzureCLI'
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${deploymentIdentity.id}': {}
+    }
+  }
+  properties: {
+    azCliVersion: '2.50.0'
+    timeout: 'PT10M'
+    retentionInterval: 'PT1H'
+    environmentVariables: [
+      { name: 'STORAGE_ACCOUNT', value: storageAccount.name }
+      { name: 'CONTAINER_NAME', value: 'deployments' }
+      { name: 'PACKAGE_URL', value: deployPackageUrl }
+    ]
+    scriptContent: '''
+      curl -sL "$PACKAGE_URL" -o /tmp/deploy.zip
+      az storage blob upload \
+        --account-name "$STORAGE_ACCOUNT" \
+        --container-name "$CONTAINER_NAME" \
+        --name deploy.zip \
+        --file /tmp/deploy.zip \
+        --auth-mode login \
+        --overwrite
+    '''
+  }
+  dependsOn: [
+    deploymentContainer
+    deployIdentityBlobRole
+  ]
 }
 
 // 6. Role Assignments for Function App to access Storage
