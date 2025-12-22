@@ -79,20 +79,6 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
 }
 
-// 3b. File Service and Share for Function App content
-resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-01-01' = {
-  parent: storageAccount
-  name: 'default'
-}
-
-resource contentShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-01-01' = {
-  parent: fileService
-  name: 'coderunner-content'
-  properties: {
-    shareQuota: 50
-  }
-}
-
 // 4. App Service Plan (Consumption)
 resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
   name: appServicePlanName
@@ -138,10 +124,6 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
           value: storageAccount.name
         }
         {
-          name: 'AzureWebJobsStorage__credential'
-          value: 'managedidentity'
-        }
-        {
           name: 'FUNCTIONS_EXTENSION_VERSION'
           value: '~4'
         }
@@ -149,23 +131,15 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
           name: 'FUNCTIONS_WORKER_RUNTIME'
           value: 'python'
         }
-        // Content share for consumption plan (uses managed identity)
-        {
-          name: 'WEBSITE_CONTENTAZUREFILECONNECTIONSTRING__accountName'
-          value: storageAccount.name
-        }
-        {
-          name: 'WEBSITE_CONTENTAZUREFILECONNECTIONSTRING__credential'
-          value: 'managedidentity'
-        }
-        {
-          name: 'WEBSITE_CONTENTSHARE'
-          value: contentShare.name
-        }
-        // Auto-deploy code from GitHub release - no manual deployment needed!
+        // Run directly from external package (no content share needed)
         {
           name: 'WEBSITE_RUN_FROM_PACKAGE'
           value: 'https://github.com/dembaatmicrosoft/code_runner/releases/download/v1.0.0/deploy.zip'
+        }
+        // Skip content share validation for external package
+        {
+          name: 'WEBSITE_SKIP_CONTENTSHARE_VALIDATION'
+          value: '1'
         }
       ]
     }

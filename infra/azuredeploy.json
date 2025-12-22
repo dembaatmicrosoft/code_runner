@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "16133355631998865773"
+      "templateHash": "1356785287774315166"
     }
   },
   "parameters": {
@@ -77,25 +77,6 @@
       }
     },
     {
-      "type": "Microsoft.Storage/storageAccounts/fileServices",
-      "apiVersion": "2023-01-01",
-      "name": "[format('{0}/{1}', variables('storageAccountName'), 'default')]",
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
-      ]
-    },
-    {
-      "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
-      "apiVersion": "2023-01-01",
-      "name": "[format('{0}/{1}/{2}', variables('storageAccountName'), 'default', 'coderunner-content')]",
-      "properties": {
-        "shareQuota": 50
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts/fileServices', variables('storageAccountName'), 'default')]"
-      ]
-    },
-    {
       "type": "Microsoft.Web/serverfarms",
       "apiVersion": "2023-01-01",
       "name": "[variables('appServicePlanName')]",
@@ -140,10 +121,6 @@
               "value": "[variables('storageAccountName')]"
             },
             {
-              "name": "AzureWebJobsStorage__credential",
-              "value": "managedidentity"
-            },
-            {
               "name": "FUNCTIONS_EXTENSION_VERSION",
               "value": "~4"
             },
@@ -152,20 +129,12 @@
               "value": "python"
             },
             {
-              "name": "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING__accountName",
-              "value": "[variables('storageAccountName')]"
-            },
-            {
-              "name": "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING__credential",
-              "value": "managedidentity"
-            },
-            {
-              "name": "WEBSITE_CONTENTSHARE",
-              "value": "coderunner-content"
-            },
-            {
               "name": "WEBSITE_RUN_FROM_PACKAGE",
               "value": "https://github.com/dembaatmicrosoft/code_runner/releases/download/v1.0.0/deploy.zip"
+            },
+            {
+              "name": "WEBSITE_SKIP_CONTENTSHARE_VALIDATION",
+              "value": "1"
             }
           ]
         }
@@ -173,7 +142,6 @@
       "dependsOn": [
         "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
         "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
-        "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', variables('storageAccountName'), 'default', 'coderunner-content')]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
       ]
     },
