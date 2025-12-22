@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "3426933660567787355"
+      "templateHash": "12732147043114001511"
     }
   },
   "parameters": {
@@ -33,13 +33,6 @@
     "deployPackageUrl": "https://github.com/dembaatmicrosoft/code_runner/releases/download/v1.0.0/deploy.zip"
   },
   "resources": [
-    {
-      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
-      "apiVersion": "2023-01-31",
-      "name": "[format('id-deploy-{0}', variables('resourceToken'))]",
-      "location": "[parameters('location')]",
-      "tags": "[variables('tags')]"
-    },
     {
       "type": "Microsoft.OperationalInsights/workspaces",
       "apiVersion": "2022-10-01",
@@ -86,22 +79,22 @@
     },
     {
       "type": "Microsoft.Web/serverfarms",
-      "apiVersion": "2024-04-01",
+      "apiVersion": "2023-12-01",
       "name": "[variables('appServicePlanName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('tags')]",
       "sku": {
-        "name": "FC1",
-        "tier": "FlexConsumption"
+        "name": "Y1",
+        "tier": "Dynamic"
       },
-      "kind": "functionapp",
+      "kind": "linux",
       "properties": {
         "reserved": true
       }
     },
     {
       "type": "Microsoft.Web/sites",
-      "apiVersion": "2024-04-01",
+      "apiVersion": "2023-12-01",
       "name": "[variables('functionAppName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('tags')]",
@@ -114,6 +107,7 @@
         "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
         "httpsOnly": true,
         "siteConfig": {
+          "linuxFxVersion": "Python|3.11",
           "appSettings": [
             {
               "name": "APPINSIGHTS_INSTRUMENTATIONKEY",
@@ -126,104 +120,33 @@
             {
               "name": "AzureWebJobsStorage__accountName",
               "value": "[variables('storageAccountName')]"
+            },
+            {
+              "name": "FUNCTIONS_EXTENSION_VERSION",
+              "value": "~4"
+            },
+            {
+              "name": "FUNCTIONS_WORKER_RUNTIME",
+              "value": "python"
+            },
+            {
+              "name": "WEBSITE_RUN_FROM_PACKAGE",
+              "value": "[variables('deployPackageUrl')]"
+            },
+            {
+              "name": "WEBSITE_ENABLE_SYNC_UPDATE_SITE",
+              "value": "true"
+            },
+            {
+              "name": "SCM_DO_BUILD_DURING_DEPLOYMENT",
+              "value": "false"
             }
           ]
-        },
-        "functionAppConfig": {
-          "deployment": {
-            "storage": {
-              "type": "blobContainer",
-              "value": "[format('{0}deployments', reference(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2023-01-01').primaryEndpoints.blob)]",
-              "authentication": {
-                "type": "SystemAssignedIdentity"
-              }
-            }
-          },
-          "scaleAndConcurrency": {
-            "maximumInstanceCount": 100,
-            "instanceMemoryMB": 2048
-          },
-          "runtime": {
-            "name": "python",
-            "version": "3.11"
-          }
         }
       },
       "dependsOn": [
         "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
         "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
-        "[resourceId('Microsoft.Resources/deploymentScripts', format('deploy-code-{0}', variables('resourceToken')))]",
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
-      ]
-    },
-    {
-      "type": "Microsoft.Storage/storageAccounts/blobServices",
-      "apiVersion": "2023-01-01",
-      "name": "[format('{0}/{1}', variables('storageAccountName'), 'default')]",
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
-      ]
-    },
-    {
-      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
-      "apiVersion": "2023-01-01",
-      "name": "[format('{0}/{1}/{2}', variables('storageAccountName'), 'default', 'deployments')]",
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('storageAccountName'), 'default')]"
-      ]
-    },
-    {
-      "type": "Microsoft.Authorization/roleAssignments",
-      "apiVersion": "2022-04-01",
-      "scope": "[format('Microsoft.Storage/storageAccounts/{0}', variables('storageAccountName'))]",
-      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-deploy-{0}', variables('resourceToken'))), variables('storageBlobDataOwnerRoleId'))]",
-      "properties": {
-        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('storageBlobDataOwnerRoleId'))]",
-        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-deploy-{0}', variables('resourceToken'))), '2023-01-31').principalId]",
-        "principalType": "ServicePrincipal"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-deploy-{0}', variables('resourceToken')))]",
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
-      ]
-    },
-    {
-      "type": "Microsoft.Resources/deploymentScripts",
-      "apiVersion": "2023-08-01",
-      "name": "[format('deploy-code-{0}', variables('resourceToken'))]",
-      "location": "[parameters('location')]",
-      "tags": "[variables('tags')]",
-      "kind": "AzureCLI",
-      "identity": {
-        "type": "UserAssigned",
-        "userAssignedIdentities": {
-          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-deploy-{0}', variables('resourceToken'))))]": {}
-        }
-      },
-      "properties": {
-        "azCliVersion": "2.50.0",
-        "timeout": "PT10M",
-        "retentionInterval": "PT1H",
-        "environmentVariables": [
-          {
-            "name": "STORAGE_ACCOUNT",
-            "value": "[variables('storageAccountName')]"
-          },
-          {
-            "name": "CONTAINER_NAME",
-            "value": "deployments"
-          },
-          {
-            "name": "PACKAGE_URL",
-            "value": "[variables('deployPackageUrl')]"
-          }
-        ],
-        "scriptContent": "      # Download package from GitHub\n      curl -sL \"$PACKAGE_URL\" -o /tmp/deploy.zip\n\n      # Get access token for storage using managed identity\n      TOKEN=$(az account get-access-token --resource https://storage.azure.com/ --query accessToken -o tsv)\n\n      # Upload using REST API (avoids shared key auth entirely)\n      curl -X PUT \\\n        -H \"Authorization: Bearer $TOKEN\" \\\n        -H \"x-ms-version: 2020-04-08\" \\\n        -H \"x-ms-blob-type: BlockBlob\" \\\n        -H \"Content-Type: application/zip\" \\\n        --data-binary @/tmp/deploy.zip \\\n        \"https://${STORAGE_ACCOUNT}.blob.core.windows.net/${CONTAINER_NAME}/deploy.zip\"\n    "
-      },
-      "dependsOn": [
-        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-deploy-{0}', variables('resourceToken'))), variables('storageBlobDataOwnerRoleId')))]",
-        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('storageAccountName'), 'default', 'deployments')]",
-        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-deploy-{0}', variables('resourceToken')))]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
       ]
     },
@@ -234,7 +157,7 @@
       "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), resourceId('Microsoft.Web/sites', variables('functionAppName')), variables('storageBlobDataOwnerRoleId'))]",
       "properties": {
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('storageBlobDataOwnerRoleId'))]",
-        "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2024-04-01', 'full').identity.principalId]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2023-12-01', 'full').identity.principalId]",
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
@@ -249,7 +172,7 @@
       "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), resourceId('Microsoft.Web/sites', variables('functionAppName')), variables('storageAccountContributorRoleId'))]",
       "properties": {
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('storageAccountContributorRoleId'))]",
-        "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2024-04-01', 'full').identity.principalId]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2023-12-01', 'full').identity.principalId]",
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
@@ -264,7 +187,7 @@
       "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), resourceId('Microsoft.Web/sites', variables('functionAppName')), variables('storageFileDataPrivilegedContributorRoleId'))]",
       "properties": {
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('storageFileDataPrivilegedContributorRoleId'))]",
-        "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2024-04-01', 'full').identity.principalId]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2023-12-01', 'full').identity.principalId]",
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
@@ -279,19 +202,19 @@
       "metadata": {
         "description": "The API endpoint. POST your Python scripts here."
       },
-      "value": "[format('https://{0}/api/run', reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2024-04-01').defaultHostName)]"
+      "value": "[format('https://{0}/api/run', reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2023-12-01').defaultHostName)]"
     },
     "testCommand": {
       "type": "string",
       "metadata": {
         "description": "Test command. Copy and run in your terminal."
       },
-      "value": "[format('curl -X POST \"https://{0}/api/run\" -H \"Content-Type: application/json\" -d ''{{\"script\": \"print(1+1)\"}}''', reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2024-04-01').defaultHostName)]"
+      "value": "[format('curl -X POST \"https://{0}/api/run\" -H \"Content-Type: application/json\" -d ''{{\"script\": \"print(1+1)\"}}''', reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2023-12-01').defaultHostName)]"
     },
     "functionAppName": {
       "type": "string",
       "metadata": {
-        "description": "Function App resource name for Azure CLI commands."
+        "description": "Function App resource name."
       },
       "value": "[variables('functionAppName')]"
     }
