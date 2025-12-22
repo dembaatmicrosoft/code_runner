@@ -135,7 +135,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
 }
 
 resource storageBlobDataOwnerRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storageAccount.id, functionApp.id, storageBlobDataOwnerRoleId)
+  name: guid(storageAccount.id, functionApp.name, storageBlobDataOwnerRoleId)
   scope: storageAccount
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataOwnerRoleId)
@@ -145,7 +145,7 @@ resource storageBlobDataOwnerRole 'Microsoft.Authorization/roleAssignments@2022-
 }
 
 resource storageAccountContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storageAccount.id, functionApp.id, storageAccountContributorRoleId)
+  name: guid(storageAccount.id, functionApp.name, storageAccountContributorRoleId)
   scope: storageAccount
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageAccountContributorRoleId)
@@ -155,7 +155,7 @@ resource storageAccountContributorRole 'Microsoft.Authorization/roleAssignments@
 }
 
 resource storageFileDataContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storageAccount.id, functionApp.id, storageFileDataPrivilegedContributorRoleId)
+  name: guid(storageAccount.id, functionApp.name, storageFileDataPrivilegedContributorRoleId)
   scope: storageAccount
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageFileDataPrivilegedContributorRoleId)
