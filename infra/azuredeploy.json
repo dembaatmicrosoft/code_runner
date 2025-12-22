@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "10147639336514679067"
+      "templateHash": "3426933660567787355"
     }
   },
   "parameters": {
@@ -218,7 +218,7 @@
             "value": "[variables('deployPackageUrl')]"
           }
         ],
-        "scriptContent": "      curl -sL \"$PACKAGE_URL\" -o /tmp/deploy.zip\n      az storage blob upload \\\n        --account-name \"$STORAGE_ACCOUNT\" \\\n        --container-name \"$CONTAINER_NAME\" \\\n        --name deploy.zip \\\n        --file /tmp/deploy.zip \\\n        --auth-mode login \\\n        --overwrite\n    "
+        "scriptContent": "      # Download package from GitHub\n      curl -sL \"$PACKAGE_URL\" -o /tmp/deploy.zip\n\n      # Get access token for storage using managed identity\n      TOKEN=$(az account get-access-token --resource https://storage.azure.com/ --query accessToken -o tsv)\n\n      # Upload using REST API (avoids shared key auth entirely)\n      curl -X PUT \\\n        -H \"Authorization: Bearer $TOKEN\" \\\n        -H \"x-ms-version: 2020-04-08\" \\\n        -H \"x-ms-blob-type: BlockBlob\" \\\n        -H \"Content-Type: application/zip\" \\\n        --data-binary @/tmp/deploy.zip \\\n        \"https://${STORAGE_ACCOUNT}.blob.core.windows.net/${CONTAINER_NAME}/deploy.zip\"\n    "
       },
       "dependsOn": [
         "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-deploy-{0}', variables('resourceToken'))), variables('storageBlobDataOwnerRoleId')))]",

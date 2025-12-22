@@ -202,14 +202,20 @@ resource deployCode 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
       { name: 'PACKAGE_URL', value: deployPackageUrl }
     ]
     scriptContent: '''
+      # Download package from GitHub
       curl -sL "$PACKAGE_URL" -o /tmp/deploy.zip
-      az storage blob upload \
-        --account-name "$STORAGE_ACCOUNT" \
-        --container-name "$CONTAINER_NAME" \
-        --name deploy.zip \
-        --file /tmp/deploy.zip \
-        --auth-mode login \
-        --overwrite
+
+      # Get access token for storage using managed identity
+      TOKEN=$(az account get-access-token --resource https://storage.azure.com/ --query accessToken -o tsv)
+
+      # Upload using REST API (avoids shared key auth entirely)
+      curl -X PUT \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "x-ms-version: 2020-04-08" \
+        -H "x-ms-blob-type: BlockBlob" \
+        -H "Content-Type: application/zip" \
+        --data-binary @/tmp/deploy.zip \
+        "https://${STORAGE_ACCOUNT}.blob.core.windows.net/${CONTAINER_NAME}/deploy.zip"
     '''
   }
   dependsOn: [
