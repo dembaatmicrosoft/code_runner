@@ -1,6 +1,9 @@
 # Local Azure Functions settings (may contain secrets)
 local.settings.json
 
+# Build artifacts
+deploy.zip
+
 # Test coverage and artifacts
 .coverage
 coverage.json
