@@ -23,13 +23,14 @@ See README.md for full documentation.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 import azure.functions as func
 import base64
 import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -68,6 +69,23 @@ ENCODING_BASE64 = "base64"
 EXIT_CODE_TIMEOUT = 124
 EXIT_CODE_INTERNAL_ERROR = -1
 
+# Dependency constants
+MAX_DEPENDENCIES = 15
+DEPENDENCY_TIMEOUT_S = 30
+DEPENDENCY_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$')
+VERSION_SPEC_PATTERN = re.compile(
+    r'^(==|>=|<=|~=|!=|<|>)[0-9]+(\.[0-9]+)*([ab][0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$'
+)
+
+# Pre-installed packages (lowercase names for matching)
+PRE_INSTALLED_PACKAGES: frozenset = frozenset([
+    "azure-functions",
+    "numpy", "pandas", "scipy", "scikit-learn", "matplotlib",
+    "requests", "httpx", "beautifulsoup4",
+    "pyyaml", "toml", "python-dateutil",
+    "tqdm", "pillow",
+])
+
 
 def get_client_ip(req: func.HttpRequest) -> str:
     """Extract client IP from request headers (handles proxies)."""
@@ -94,6 +112,7 @@ def log_audit_event(
     script_size: int,
     timeout_s: int,
     context_files: int,
+    dependencies: Optional[List[str]] = None,
     duration_ms: Optional[float] = None,
     exit_code: Optional[int] = None,
     error: Optional[str] = None,
@@ -110,6 +129,9 @@ def log_audit_event(
         "context_files": context_files,
     }
 
+    if dependencies is not None:
+        audit_data["dependencies"] = dependencies
+        audit_data["dependency_count"] = len(dependencies)
     if duration_ms is not None:
         audit_data["duration_ms"] = round(duration_ms, 2)
     if exit_code is not None:
@@ -136,6 +158,22 @@ class ExecutionResult:
     stdout: str
     stderr: str
     artifacts: dict = field(default_factory=dict)
+
+
+@dataclass
+class Dependency:
+    """A package dependency with optional version constraint."""
+    name: str
+    version_spec: Optional[str] = None
+
+    def __str__(self) -> str:
+        if self.version_spec:
+            return f"{self.name}{self.version_spec}"
+        return self.name
+
+    def is_pre_installed(self) -> bool:
+        """Check if this package is pre-installed (ignores version)."""
+        return self.name.lower() in PRE_INSTALLED_PACKAGES
 
 
 def error_response(message: str, status_code: int = 400) -> func.HttpResponse:
@@ -239,6 +277,125 @@ def validate_context(context: Dict[str, ContextFile]) -> Optional[func.HttpRespo
     return None
 
 
+def parse_dependency(dep_str: str) -> Union[Dependency, func.HttpResponse]:
+    """Parse a dependency string into a Dependency object."""
+    if not isinstance(dep_str, str):
+        return error_response(f"Dependency must be a string, got: {type(dep_str).__name__}")
+
+    dep_str = dep_str.strip()
+    if not dep_str:
+        return error_response("Dependency cannot be empty.")
+
+    # Split name from version specifier
+    # Match version operators: ==, >=, <=, ~=, !=, <, >
+    match = re.match(r'^([a-zA-Z0-9._-]+)((?:==|>=|<=|~=|!=|<|>).+)?$', dep_str)
+    if not match:
+        return error_response(f"Invalid dependency format: '{dep_str}'")
+
+    name = match.group(1)
+    version_spec = match.group(2)
+
+    # Validate package name
+    if not DEPENDENCY_NAME_PATTERN.match(name):
+        return error_response(f"Invalid package name: '{name}'")
+
+    # Validate version specifier if present
+    if version_spec and not VERSION_SPEC_PATTERN.match(version_spec):
+        return error_response(f"Invalid version specifier: '{version_spec}'")
+
+    return Dependency(name=name, version_spec=version_spec)
+
+
+def parse_dependencies(raw_deps: list) -> Union[List[Dependency], func.HttpResponse]:
+    """Parse raw dependency list into Dependency objects."""
+    if not isinstance(raw_deps, list):
+        return error_response("`dependencies` must be an array.")
+
+    if len(raw_deps) > MAX_DEPENDENCIES:
+        return error_response(f"Too many dependencies: {len(raw_deps)} > {MAX_DEPENDENCIES}")
+
+    dependencies = []
+    seen_names = set()
+
+    for dep_str in raw_deps:
+        parsed = parse_dependency(dep_str)
+        if isinstance(parsed, func.HttpResponse):
+            return parsed
+
+        # Check for duplicates
+        name_lower = parsed.name.lower()
+        if name_lower in seen_names:
+            return error_response(f"Duplicate dependency: '{parsed.name}'")
+        seen_names.add(name_lower)
+
+        dependencies.append(parsed)
+
+    return dependencies
+
+
+def filter_pre_installed(deps: List[Dependency]) -> List[Dependency]:
+    """Remove dependencies that are already pre-installed."""
+    return [d for d in deps if not d.is_pre_installed()]
+
+
+def install_dependencies(deps: List[Dependency], exec_dir: Path) -> Optional[str]:
+    """
+    Install dependencies using UV.
+
+    Returns None on success, error message on failure.
+
+    SECURITY: Uses --only-binary :all: to prevent setup.py execution.
+    """
+    if not deps:
+        return None
+
+    # Build package list
+    packages = [str(d) for d in deps]
+
+    # Check if UV is available, fall back to pip if not
+    uv_path = shutil.which("uv")
+    if uv_path:
+        cmd = [
+            uv_path, "pip", "install",
+            "--only-binary", ":all:",
+            "--no-cache-dir",
+            "--quiet",
+        ] + packages
+    else:
+        # Fall back to pip with same security flags
+        python_exe = sys.executable or "python3"
+        cmd = [
+            python_exe, "-m", "pip", "install",
+            "--only-binary", ":all:",
+            "--no-cache-dir",
+            "--quiet",
+            "--disable-pip-version-check",
+        ] + packages
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=DEPENDENCY_TIMEOUT_S,
+            cwd=str(exec_dir),
+            env=_create_safe_environment(),
+        )
+
+        if result.returncode != 0:
+            stderr = result.stderr.decode(ENCODING_UTF8, errors="replace")
+            # Truncate long error messages
+            if len(stderr) > 500:
+                stderr = stderr[:500] + "..."
+            return f"Dependency installation failed: {stderr}"
+
+        return None
+
+    except subprocess.TimeoutExpired:
+        return f"Dependency installation timed out after {DEPENDENCY_TIMEOUT_S}s"
+    except Exception as e:
+        return f"Dependency installation error: {e}"
+
+
 def materialize_context(context: Dict[str, ContextFile], exec_dir: Path) -> None:
     """Write context files to input directory with secure permissions."""
     input_dir = exec_dir / INPUT_DIR
@@ -285,8 +442,8 @@ def collect_artifacts(exec_dir: Path) -> Union[dict, func.HttpResponse]:
     return artifacts
 
 
-def parse_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict], func.HttpResponse]:
-    """Extract script, timeout, and raw context from request."""
+def parse_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict, list], func.HttpResponse]:
+    """Extract script, timeout, raw context, and raw dependencies from request."""
     content_type = req.headers.get("content-type", "")
 
     if content_type.startswith(CONTENT_TYPE_TEXT):
@@ -294,8 +451,8 @@ def parse_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict], func.Ht
     return _parse_json_request(req)
 
 
-def _parse_raw_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict], func.HttpResponse]:
-    """Parse raw text request: script in body, timeout in query param. No context support."""
+def _parse_raw_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict, list], func.HttpResponse]:
+    """Parse raw text request: script in body, timeout in query param. No context/deps support."""
     try:
         script = req.get_body().decode(ENCODING_UTF8)
     except Exception:
@@ -303,16 +460,16 @@ def _parse_raw_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict], fu
 
     timeout_param = req.params.get("timeout_s")
     if timeout_param is None:
-        return (script, DEFAULT_TIMEOUT_S, {})
+        return (script, DEFAULT_TIMEOUT_S, {}, [])
 
     try:
-        return (script, int(timeout_param), {})
+        return (script, int(timeout_param), {}, [])
     except ValueError:
         return error_response("`timeout_s` query parameter must be integer.")
 
 
-def _parse_json_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict], func.HttpResponse]:
-    """Parse JSON request: script, timeout, and context in body."""
+def _parse_json_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict, list], func.HttpResponse]:
+    """Parse JSON request: script, timeout, context, and dependencies in body."""
     try:
         body = req.get_json()
     except ValueError:
@@ -329,7 +486,8 @@ def _parse_json_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict], f
         return error_response("`timeout_s` must be an integer.")
 
     raw_context = body.get("context", {})
-    return (script, timeout_s, raw_context)
+    raw_deps = body.get("dependencies", [])
+    return (script, timeout_s, raw_context, raw_deps)
 
 
 def validate_timeout(timeout_s: int) -> Union[int, func.HttpResponse]:
@@ -358,16 +516,25 @@ def validate_script_size(script: str) -> Optional[func.HttpResponse]:
 def execute_script(
     script: str,
     timeout_s: int,
-    context: Optional[Dict[str, ContextFile]] = None
+    context: Optional[Dict[str, ContextFile]] = None,
+    dependencies: Optional[List[Dependency]] = None,
 ) -> Union[ExecutionResult, func.HttpResponse]:
-    """Execute script in subprocess with optional context. Returns ExecutionResult or error."""
+    """Execute script in subprocess with optional context and dependencies."""
     context = context or {}
+    dependencies = dependencies or []
     exec_id = str(uuid.uuid4())
     exec_dir = Path(tempfile.gettempdir()) / f"exec_{exec_id}"
 
     try:
         # Create execution directory with restrictive permissions (owner only)
         exec_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+        # Install dependencies (only non-pre-installed ones)
+        deps_to_install = filter_pre_installed(dependencies)
+        if deps_to_install:
+            install_error = install_dependencies(deps_to_install, exec_dir)
+            if install_error:
+                return error_response(install_error, status_code=500)
 
         # Materialize context files
         if context:
@@ -522,7 +689,7 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
     parsed = parse_request(req)
     if isinstance(parsed, func.HttpResponse):
         return parsed
-    script, timeout_s, raw_context = parsed
+    script, timeout_s, raw_context, raw_deps = parsed
 
     # Compute audit info early
     script_hash = compute_script_hash(script)
@@ -546,6 +713,20 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
         )
         return size_error
 
+    # Parse and validate dependencies
+    dependencies: List[Dependency] = []
+    dep_strings: List[str] = []
+    if raw_deps:
+        parsed_deps = parse_dependencies(raw_deps)
+        if isinstance(parsed_deps, func.HttpResponse):
+            log_audit_event(
+                "request_rejected", request_id, client_ip, script_hash,
+                script_size, validated_timeout, 0, error="invalid_dependencies"
+            )
+            return parsed_deps
+        dependencies = parsed_deps
+        dep_strings = [str(d) for d in dependencies]
+
     # Parse and validate context
     context = {}
     if raw_context:
@@ -553,7 +734,8 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
         if isinstance(parsed_context, func.HttpResponse):
             log_audit_event(
                 "request_rejected", request_id, client_ip, script_hash,
-                script_size, validated_timeout, len(raw_context), error="invalid_context"
+                script_size, validated_timeout, len(raw_context),
+                dependencies=dep_strings, error="invalid_context"
             )
             return parsed_context
         context = parsed_context
@@ -562,7 +744,8 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
         if context_error:
             log_audit_event(
                 "request_rejected", request_id, client_ip, script_hash,
-                script_size, validated_timeout, len(context), error="context_validation_failed"
+                script_size, validated_timeout, len(context),
+                dependencies=dep_strings, error="context_validation_failed"
             )
             return context_error
 
@@ -572,18 +755,20 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
         # Log execution start
         log_audit_event(
             "execution_started", request_id, client_ip, script_hash,
-            script_size, validated_timeout, len(context)
+            script_size, validated_timeout, len(context),
+            dependencies=dep_strings
         )
 
         # Execute
-        result = execute_script(script, validated_timeout, context)
+        result = execute_script(script, validated_timeout, context, dependencies)
         duration_ms = (time.time() - start_time) * 1000
 
         if isinstance(result, func.HttpResponse):
             log_audit_event(
                 "execution_error", request_id, client_ip, script_hash,
                 script_size, validated_timeout, len(context),
-                duration_ms=duration_ms, error="execution_failed"
+                dependencies=dep_strings, duration_ms=duration_ms,
+                error="execution_failed"
             )
             return result
 
@@ -591,7 +776,8 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
         log_audit_event(
             "execution_completed", request_id, client_ip, script_hash,
             script_size, validated_timeout, len(context),
-            duration_ms=duration_ms, exit_code=result.exit_code
+            dependencies=dep_strings, duration_ms=duration_ms,
+            exit_code=result.exit_code
         )
 
         return func.HttpResponse(

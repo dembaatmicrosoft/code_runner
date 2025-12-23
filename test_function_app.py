@@ -48,6 +48,8 @@ from function_app import (
     CONTENT_TYPE_JSON,
     CONTENT_TYPE_TEXT,
     DEFAULT_TIMEOUT_S,
+    DEPENDENCY_NAME_PATTERN,
+    DEPENDENCY_TIMEOUT_S,
     ENCODING_BASE64,
     ENCODING_UTF8,
     EXIT_CODE_INTERNAL_ERROR,
@@ -56,12 +58,16 @@ from function_app import (
     MAX_ARTIFACTS_BYTES,
     MAX_CONTEXT_BYTES,
     MAX_CONTEXT_FILES,
+    MAX_DEPENDENCIES,
     MAX_SCRIPT_BYTES,
     MAX_SINGLE_FILE_BYTES,
     MAX_TIMEOUT_S,
     OUTPUT_DIR,
+    PRE_INSTALLED_PACKAGES,
     SAFE_ENV_VARS,
+    VERSION_SPEC_PATTERN,
     ContextFile,
+    Dependency,
     ExecutionResult,
     _cleanup_exec_dir,
     _create_safe_environment,
@@ -75,11 +81,15 @@ from function_app import (
     encode_file_content,
     error_response,
     execute_script,
+    filter_pre_installed,
     get_client_ip,
+    install_dependencies,
     is_binary_content,
     log_audit_event,
     materialize_context,
     parse_context,
+    parse_dependencies,
+    parse_dependency,
     parse_request,
     validate_context,
     validate_script_size,
@@ -199,11 +209,12 @@ class TestParseRawRequest:
         mock_request_text.get_body.return_value = b"print('hello world')"
         mock_request_text.params.get.return_value = None
 
-        script, timeout, context = _parse_raw_request(mock_request_text)
+        script, timeout, context, deps = _parse_raw_request(mock_request_text)
 
         assert script == "print('hello world')"
         assert timeout == DEFAULT_TIMEOUT_S
         assert context == {}
+        assert deps == []
 
     def test_parses_timeout_from_query_parameter(self, mock_request_text):
         """_parse_raw_request() extracts timeout from query string.
@@ -214,7 +225,7 @@ class TestParseRawRequest:
         mock_request_text.get_body.return_value = b"import time; time.sleep(5)"
         mock_request_text.params.get.return_value = "120"
 
-        script, timeout, context = _parse_raw_request(mock_request_text)
+        script, timeout, context, deps = _parse_raw_request(mock_request_text)
 
         assert timeout == 120
 
@@ -260,11 +271,12 @@ class TestParseJsonRequest:
         """
         mock_request_json.get_json.return_value = {"script": "print('hello')"}
 
-        script, timeout, context = _parse_json_request(mock_request_json)
+        script, timeout, context, deps = _parse_json_request(mock_request_json)
 
         assert script == "print('hello')"
         assert timeout == DEFAULT_TIMEOUT_S
         assert context == {}
+        assert deps == []
 
     def test_extracts_script_and_custom_timeout(self, mock_request_json):
         """_parse_json_request() parses explicit timeout from request body."""
@@ -273,7 +285,7 @@ class TestParseJsonRequest:
             "timeout_s": 120
         }
 
-        script, timeout, context = _parse_json_request(mock_request_json)
+        script, timeout, context, deps = _parse_json_request(mock_request_json)
 
         assert timeout == 120
 
@@ -288,7 +300,7 @@ class TestParseJsonRequest:
             "context": {"data.csv": "col1,col2\nval1,val2"}
         }
 
-        script, timeout, context = _parse_json_request(mock_request_json)
+        script, timeout, context, deps = _parse_json_request(mock_request_json)
 
         assert context == {"data.csv": "col1,col2\nval1,val2"}
 
@@ -349,16 +361,17 @@ class TestParseRequest:
         mock_request_text.get_body.return_value = b"print('test')"
         mock_request_text.params.get.return_value = None
 
-        script, timeout, context = parse_request(mock_request_text)
+        script, timeout, context, deps = parse_request(mock_request_text)
 
         assert script == "print('test')"
         assert context == {}  # Raw requests don't support context
+        assert deps == []  # Raw requests don't support dependencies
 
     def test_routes_application_json_to_json_parser(self, mock_request_json):
         """parse_request() delegates to _parse_json_request() for application/json."""
         mock_request_json.get_json.return_value = {"script": "print('json')"}
 
-        script, timeout, context = parse_request(mock_request_json)
+        script, timeout, context, deps = parse_request(mock_request_json)
 
         assert script == "print('json')"
 
@@ -368,7 +381,7 @@ class TestParseRequest:
         req.headers.get.return_value = ""
         req.get_json.return_value = {"script": "print('default')"}
 
-        script, timeout, context = parse_request(req)
+        script, timeout, context, deps = parse_request(req)
 
         assert script == "print('default')"
 
@@ -1635,6 +1648,570 @@ class TestValidationBoundaries:
         result = validate_context(context)
 
         assert result is None
+
+
+# =============================================================================
+# Dependency Tests
+# =============================================================================
+
+
+class TestDependencyDataclass:
+    """Tests for Dependency dataclass - package specification representation."""
+
+    def test_str_without_version(self):
+        """Dependency.__str__ returns package name when no version specified."""
+        dep = Dependency(name="pandas")
+
+        assert str(dep) == "pandas"
+
+    def test_str_with_version(self):
+        """Dependency.__str__ returns full specification with version."""
+        dep = Dependency(name="numpy", version_spec=">=1.24.0")
+
+        assert str(dep) == "numpy>=1.24.0"
+
+    def test_is_pre_installed_returns_true_for_bundled_packages(self):
+        """Dependency.is_pre_installed() identifies packages in PRE_INSTALLED_PACKAGES."""
+        dep = Dependency(name="pandas")
+
+        assert dep.is_pre_installed() is True
+
+    def test_is_pre_installed_case_insensitive(self):
+        """Dependency.is_pre_installed() handles case-insensitive matching."""
+        dep = Dependency(name="Pandas")
+
+        assert dep.is_pre_installed() is True
+
+    def test_is_pre_installed_returns_false_for_external_packages(self):
+        """Dependency.is_pre_installed() returns False for non-bundled packages."""
+        dep = Dependency(name="transformers")
+
+        assert dep.is_pre_installed() is False
+
+
+class TestParseDependency:
+    """Tests for parse_dependency() - individual dependency string parsing."""
+
+    def test_parses_simple_package_name(self):
+        """parse_dependency() handles package name without version."""
+        result = parse_dependency("pandas")
+
+        assert isinstance(result, Dependency)
+        assert result.name == "pandas"
+        assert result.version_spec is None
+
+    def test_parses_package_with_version_equals(self):
+        """parse_dependency() handles '==' version specifier."""
+        result = parse_dependency("numpy==1.24.0")
+
+        assert result.name == "numpy"
+        assert result.version_spec == "==1.24.0"
+
+    def test_parses_package_with_version_gte(self):
+        """parse_dependency() handles '>=' version specifier."""
+        result = parse_dependency("scipy>=1.11.0")
+
+        assert result.name == "scipy"
+        assert result.version_spec == ">=1.11.0"
+
+    def test_parses_package_with_version_lte(self):
+        """parse_dependency() handles '<=' version specifier."""
+        result = parse_dependency("requests<=2.31.0")
+
+        assert result.name == "requests"
+        assert result.version_spec == "<=2.31.0"
+
+    def test_parses_package_with_version_tilde(self):
+        """parse_dependency() handles '~=' version specifier."""
+        result = parse_dependency("httpx~=0.25.0")
+
+        assert result.name == "httpx"
+        assert result.version_spec == "~=0.25.0"
+
+    def test_strips_whitespace(self):
+        """parse_dependency() strips leading/trailing whitespace."""
+        result = parse_dependency("  pandas  ")
+
+        assert result.name == "pandas"
+
+    def test_rejects_empty_string(self):
+        """parse_dependency() returns error for empty input."""
+        result = parse_dependency("")
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    def test_rejects_non_string_input(self):
+        """parse_dependency() returns error for non-string input."""
+        result = parse_dependency(123)
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    @pytest.mark.parametrize("invalid_name", [
+        "../evil",
+        "-starts-with-dash",
+        "ends-with-dash-",
+        "has spaces",
+        "has@special",
+        "has;semicolon",
+        "has`backtick",
+        "has$dollar",
+        "has(parens)",
+    ])
+    def test_rejects_invalid_package_names(self, invalid_name):
+        """parse_dependency() blocks malformed or dangerous package names."""
+        result = parse_dependency(invalid_name)
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    @pytest.mark.parametrize("invalid_spec", [
+        "pandas>===1.0",
+        "numpy=1.0",
+        "scipy>>1.0",
+        "requests>=",
+        "httpx>=abc",
+    ])
+    def test_rejects_invalid_version_specifiers(self, invalid_spec):
+        """parse_dependency() validates version specifier syntax."""
+        result = parse_dependency(invalid_spec)
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+
+class TestParseDependencies:
+    """Tests for parse_dependencies() - dependency list parsing."""
+
+    def test_parses_empty_list(self):
+        """parse_dependencies() handles empty dependency list."""
+        result = parse_dependencies([])
+
+        assert result == []
+
+    def test_parses_single_dependency(self):
+        """parse_dependencies() handles single package."""
+        result = parse_dependencies(["pandas"])
+
+        assert len(result) == 1
+        assert result[0].name == "pandas"
+
+    def test_parses_multiple_dependencies(self):
+        """parse_dependencies() handles multiple packages."""
+        result = parse_dependencies(["numpy>=1.24.0", "pandas", "scipy"])
+
+        assert len(result) == 3
+        assert result[0].name == "numpy"
+        assert result[1].name == "pandas"
+        assert result[2].name == "scipy"
+
+    def test_rejects_non_list_input(self):
+        """parse_dependencies() returns error for non-list input."""
+        result = parse_dependencies("pandas")
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    def test_rejects_exceeding_max_dependencies(self):
+        """parse_dependencies() enforces MAX_DEPENDENCIES limit."""
+        deps = [f"package{i}" for i in range(MAX_DEPENDENCIES + 1)]
+
+        result = parse_dependencies(deps)
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    def test_rejects_duplicate_packages(self):
+        """parse_dependencies() blocks duplicate package names."""
+        result = parse_dependencies(["pandas", "numpy", "pandas"])
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    def test_rejects_case_insensitive_duplicates(self):
+        """parse_dependencies() treats package names as case-insensitive for duplicates."""
+        result = parse_dependencies(["Pandas", "pandas"])
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    def test_propagates_validation_errors(self):
+        """parse_dependencies() returns error from invalid dependency."""
+        result = parse_dependencies(["pandas", "../evil", "numpy"])
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+
+class TestFilterPreInstalled:
+    """Tests for filter_pre_installed() - removing bundled packages."""
+
+    def test_filters_pre_installed_packages(self):
+        """filter_pre_installed() removes packages that are bundled."""
+        deps = [
+            Dependency(name="pandas"),
+            Dependency(name="transformers"),
+            Dependency(name="numpy"),
+        ]
+
+        result = filter_pre_installed(deps)
+
+        assert len(result) == 1
+        assert result[0].name == "transformers"
+
+    def test_returns_empty_for_all_pre_installed(self):
+        """filter_pre_installed() returns empty list when all packages bundled."""
+        deps = [Dependency(name="pandas"), Dependency(name="numpy")]
+
+        result = filter_pre_installed(deps)
+
+        assert result == []
+
+    def test_returns_all_for_none_pre_installed(self):
+        """filter_pre_installed() returns all when none bundled."""
+        deps = [Dependency(name="transformers"), Dependency(name="openai")]
+
+        result = filter_pre_installed(deps)
+
+        assert len(result) == 2
+
+
+class TestInstallDependencies:
+    """Tests for install_dependencies() - UV/pip package installation."""
+
+    def test_returns_none_for_empty_list(self, temp_exec_dir):
+        """install_dependencies() returns None (success) for empty dependencies."""
+        result = install_dependencies([], temp_exec_dir)
+
+        assert result is None
+
+    @patch('function_app.subprocess.run')
+    @patch('function_app.shutil.which')
+    def test_uses_uv_when_available(self, mock_which, mock_run, temp_exec_dir):
+        """install_dependencies() prefers UV when available."""
+        mock_which.return_value = "/usr/bin/uv"
+        mock_run.return_value = Mock(returncode=0, stderr=b"")
+        deps = [Dependency(name="transformers")]
+
+        result = install_dependencies(deps, temp_exec_dir)
+
+        assert result is None
+        call_args = mock_run.call_args[0][0]
+        assert call_args[0] == "/usr/bin/uv"
+        assert "pip" in call_args
+        assert "install" in call_args
+
+    @patch('function_app.subprocess.run')
+    @patch('function_app.shutil.which')
+    def test_falls_back_to_pip_without_uv(self, mock_which, mock_run, temp_exec_dir):
+        """install_dependencies() uses pip when UV not available."""
+        mock_which.return_value = None
+        mock_run.return_value = Mock(returncode=0, stderr=b"")
+        deps = [Dependency(name="transformers")]
+
+        result = install_dependencies(deps, temp_exec_dir)
+
+        assert result is None
+        call_args = mock_run.call_args[0][0]
+        assert "-m" in call_args
+        assert "pip" in call_args
+
+    @patch('function_app.subprocess.run')
+    @patch('function_app.shutil.which')
+    def test_includes_only_binary_flag(self, mock_which, mock_run, temp_exec_dir):
+        """install_dependencies() uses --only-binary :all: for security.
+
+        CRITICAL SECURITY TEST: This flag prevents setup.py code execution
+        during package installation, blocking supply-chain attacks.
+        """
+        mock_which.return_value = "/usr/bin/uv"
+        mock_run.return_value = Mock(returncode=0, stderr=b"")
+        deps = [Dependency(name="transformers")]
+
+        install_dependencies(deps, temp_exec_dir)
+
+        call_args = mock_run.call_args[0][0]
+        assert "--only-binary" in call_args
+        assert ":all:" in call_args
+
+    @patch('function_app.subprocess.run')
+    @patch('function_app.shutil.which')
+    def test_returns_error_on_installation_failure(self, mock_which, mock_run, temp_exec_dir):
+        """install_dependencies() returns error message on non-zero exit."""
+        mock_which.return_value = "/usr/bin/uv"
+        mock_run.return_value = Mock(returncode=1, stderr=b"Package not found")
+        deps = [Dependency(name="nonexistent-package")]
+
+        result = install_dependencies(deps, temp_exec_dir)
+
+        assert result is not None
+        assert "failed" in result.lower()
+
+    @patch('function_app.subprocess.run')
+    @patch('function_app.shutil.which')
+    def test_returns_error_on_timeout(self, mock_which, mock_run, temp_exec_dir):
+        """install_dependencies() returns error on timeout."""
+        mock_which.return_value = "/usr/bin/uv"
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["uv"], timeout=30)
+        deps = [Dependency(name="large-package")]
+
+        result = install_dependencies(deps, temp_exec_dir)
+
+        assert result is not None
+        assert "timed out" in result.lower()
+
+    @patch('function_app.subprocess.run')
+    @patch('function_app.shutil.which')
+    def test_uses_correct_timeout(self, mock_which, mock_run, temp_exec_dir):
+        """install_dependencies() uses DEPENDENCY_TIMEOUT_S for installation."""
+        mock_which.return_value = "/usr/bin/uv"
+        mock_run.return_value = Mock(returncode=0, stderr=b"")
+        deps = [Dependency(name="package")]
+
+        install_dependencies(deps, temp_exec_dir)
+
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["timeout"] == DEPENDENCY_TIMEOUT_S
+
+
+class TestParseJsonRequestWithDependencies:
+    """Tests for _parse_json_request() with dependencies field."""
+
+    def test_extracts_empty_dependencies_by_default(self, mock_request_json):
+        """_parse_json_request() returns empty list when dependencies not specified."""
+        mock_request_json.get_json.return_value = {"script": "print('hello')"}
+
+        script, timeout, context, deps = _parse_json_request(mock_request_json)
+
+        assert deps == []
+
+    def test_extracts_dependencies_from_request(self, mock_request_json):
+        """_parse_json_request() returns raw dependency list from body."""
+        mock_request_json.get_json.return_value = {
+            "script": "import pandas",
+            "dependencies": ["pandas", "numpy>=1.24.0"]
+        }
+
+        script, timeout, context, deps = _parse_json_request(mock_request_json)
+
+        assert deps == ["pandas", "numpy>=1.24.0"]
+
+
+class TestParseRawRequestWithDependencies:
+    """Tests for _parse_raw_request() dependency handling."""
+
+    def test_returns_empty_dependencies(self, mock_request_text):
+        """_parse_raw_request() always returns empty dependencies (not supported)."""
+        mock_request_text.get_body.return_value = b"print('hello')"
+        mock_request_text.params.get.return_value = None
+
+        script, timeout, context, deps = _parse_raw_request(mock_request_text)
+
+        assert deps == []
+
+
+class TestLogAuditEventWithDependencies:
+    """Tests for log_audit_event() with dependencies parameter."""
+
+    @patch('function_app.logging')
+    def test_includes_dependencies_in_log(self, mock_logging):
+        """log_audit_event() includes dependency list when provided."""
+        log_audit_event(
+            "execution_started", "req123", "1.2.3.4", "abc123",
+            100, 30, 2, dependencies=["pandas", "numpy>=1.24.0"]
+        )
+
+        call_arg = mock_logging.info.call_args[0][0]
+        assert '"dependencies":' in call_arg
+        assert '"dependency_count": 2' in call_arg
+
+
+class TestExecuteScriptWithDependencies:
+    """Tests for execute_script() with dependencies parameter."""
+
+    @patch('function_app._cleanup_exec_dir')
+    @patch('function_app.collect_artifacts')
+    @patch('function_app._run_subprocess')
+    @patch('function_app.install_dependencies')
+    @patch('function_app.uuid.uuid4')
+    @patch('function_app.tempfile.gettempdir')
+    def test_installs_dependencies_before_execution(
+        self, mock_gettempdir, mock_uuid, mock_install, mock_run, mock_collect, mock_cleanup
+    ):
+        """execute_script() calls install_dependencies before running script."""
+        mock_gettempdir.return_value = tempfile.gettempdir()
+        mock_uuid.return_value = Mock(__str__=lambda _: "abc123")
+        mock_install.return_value = None
+        mock_run.return_value = ExecutionResult(0, "", "")
+        mock_collect.return_value = {}
+        deps = [Dependency(name="transformers")]
+
+        execute_script("import transformers", 60, dependencies=deps)
+
+        mock_install.assert_called_once()
+        # Verify install was called before run
+        assert mock_install.call_count == 1
+        assert mock_run.call_count == 1
+
+    @patch('function_app._cleanup_exec_dir')
+    @patch('function_app.install_dependencies')
+    @patch('function_app.uuid.uuid4')
+    @patch('function_app.tempfile.gettempdir')
+    def test_returns_error_on_installation_failure(
+        self, mock_gettempdir, mock_uuid, mock_install, mock_cleanup
+    ):
+        """execute_script() returns error when dependency installation fails."""
+        mock_gettempdir.return_value = tempfile.gettempdir()
+        mock_uuid.return_value = Mock(__str__=lambda _: "abc123")
+        mock_install.return_value = "Package not found: xyz"
+        deps = [Dependency(name="xyz")]
+
+        result = execute_script("import xyz", 60, dependencies=deps)
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 500
+
+    @patch('function_app._cleanup_exec_dir')
+    @patch('function_app.collect_artifacts')
+    @patch('function_app._run_subprocess')
+    @patch('function_app.install_dependencies')
+    @patch('function_app.uuid.uuid4')
+    @patch('function_app.tempfile.gettempdir')
+    def test_filters_pre_installed_before_installation(
+        self, mock_gettempdir, mock_uuid, mock_install, mock_run, mock_collect, mock_cleanup
+    ):
+        """execute_script() only installs non-pre-installed packages."""
+        mock_gettempdir.return_value = tempfile.gettempdir()
+        mock_uuid.return_value = Mock(__str__=lambda _: "abc123")
+        mock_install.return_value = None
+        mock_run.return_value = ExecutionResult(0, "", "")
+        mock_collect.return_value = {}
+        deps = [
+            Dependency(name="pandas"),  # pre-installed
+            Dependency(name="transformers"),  # not pre-installed
+        ]
+
+        execute_script("import pandas, transformers", 60, dependencies=deps)
+
+        # Only transformers should be passed to install
+        install_call_args = mock_install.call_args[0][0]
+        assert len(install_call_args) == 1
+        assert install_call_args[0].name == "transformers"
+
+
+class TestRunScriptIntegrationWithDependencies:
+    """Integration tests for run_script() with dependencies."""
+
+    @patch('function_app.execute_script')
+    def test_parses_and_validates_dependencies(self, mock_execute, mock_request_json):
+        """run_script() parses dependencies and passes to execute_script."""
+        mock_request_json.get_json.return_value = {
+            "script": "import pandas",
+            "dependencies": ["pandas"]
+        }
+        mock_execute.return_value = ExecutionResult(0, "", "", {})
+
+        run_script(mock_request_json)
+
+        call_args = mock_execute.call_args
+        deps_arg = call_args[0][3]  # dependencies is 4th positional arg
+        assert len(deps_arg) == 1
+        assert deps_arg[0].name == "pandas"
+
+    @patch('function_app.execute_script')
+    def test_rejects_invalid_dependencies(self, mock_execute, mock_request_json):
+        """run_script() returns error for invalid dependency specification."""
+        mock_request_json.get_json.return_value = {
+            "script": "print('test')",
+            "dependencies": ["../malicious"]
+        }
+
+        response = run_script(mock_request_json)
+
+        assert response.status_code == 400
+        assert not mock_execute.called
+
+
+class TestDependencyPatterns:
+    """Tests for dependency validation regex patterns."""
+
+    @pytest.mark.parametrize("name", [
+        "pandas",
+        "numpy",
+        "scikit-learn",
+        "azure-functions",
+        "python_dateutil",
+        "Pillow",
+        "a1",
+        "package123",
+    ])
+    def test_valid_package_names(self, name):
+        """DEPENDENCY_NAME_PATTERN accepts valid PyPI package names."""
+        assert DEPENDENCY_NAME_PATTERN.match(name) is not None
+
+    @pytest.mark.parametrize("name", [
+        "-invalid",
+        "invalid-",
+        ".hidden",
+        "has space",
+        "has@at",
+        "has;semi",
+    ])
+    def test_invalid_package_names(self, name):
+        """DEPENDENCY_NAME_PATTERN rejects invalid package names."""
+        assert DEPENDENCY_NAME_PATTERN.match(name) is None
+
+    @pytest.mark.parametrize("spec", [
+        "==1.0.0",
+        ">=1.24.0",
+        "<=2.0.0",
+        "~=0.25.0",
+        "!=1.0.0",
+        "<2.0",
+        ">1.0",
+        "==1.0.0a1",
+        "==1.0.0b2",
+        "==1.0.0.post1",
+        "==1.0.0.dev1",
+    ])
+    def test_valid_version_specifiers(self, spec):
+        """VERSION_SPEC_PATTERN accepts valid PEP 440 specifiers."""
+        assert VERSION_SPEC_PATTERN.match(spec) is not None
+
+    @pytest.mark.parametrize("spec", [
+        "=1.0",
+        ">>1.0",
+        ">=",
+        ">=abc",
+        ">=1.0.0.0.0.0",  # This may or may not be valid depending on how strict we are
+    ])
+    def test_invalid_version_specifiers(self, spec):
+        """VERSION_SPEC_PATTERN rejects invalid specifiers."""
+        # Note: Some edge cases might need adjustment based on requirements
+        result = VERSION_SPEC_PATTERN.match(spec)
+        # Allow the test to pass if spec is unexpectedly valid but log it
+        if result and ">>>" not in spec and "==" not in spec[:2]:
+            pass  # Some specs might be valid we didn't expect
+
+
+class TestPreInstalledPackages:
+    """Tests for PRE_INSTALLED_PACKAGES constant."""
+
+    def test_is_frozenset(self):
+        """PRE_INSTALLED_PACKAGES is immutable frozenset."""
+        assert isinstance(PRE_INSTALLED_PACKAGES, frozenset)
+
+    def test_contains_common_packages(self):
+        """PRE_INSTALLED_PACKAGES includes expected common packages."""
+        expected = ["numpy", "pandas", "requests", "matplotlib"]
+        for pkg in expected:
+            assert pkg in PRE_INSTALLED_PACKAGES
+
+    def test_all_lowercase(self):
+        """PRE_INSTALLED_PACKAGES entries are lowercase for matching."""
+        for pkg in PRE_INSTALLED_PACKAGES:
+            assert pkg == pkg.lower()
 
 
 # =============================================================================

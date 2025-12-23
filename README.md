@@ -63,8 +63,9 @@ POST /api/run
 
 ```json
 {
-  "script": "print('Hello, World!')",
+  "script": "import pandas as pd; print(pd.__version__)",
   "timeout_s": 30,
+  "dependencies": ["pandas", "numpy>=1.24.0"],
   "context": {
     "data.csv": "col1,col2\n1,2",
     "image.png": {"content": "<base64>", "encoding": "base64"}
@@ -111,6 +112,32 @@ with open("./output/result.csv", "w") as f:
     f.write("output,data\n1,2")
 ```
 
+### Dependencies
+
+Scripts can request Python packages via the `dependencies` field:
+
+```json
+{
+  "script": "import openai; print(openai.__version__)",
+  "dependencies": ["openai>=1.0.0"]
+}
+```
+
+**Pre-installed packages** (zero latency):
+- Data Science: numpy, pandas, scipy, scikit-learn, matplotlib
+- Web & API: requests, httpx, beautifulsoup4
+- Data Formats: pyyaml, toml, python-dateutil
+- Utilities: tqdm, pillow
+
+**On-demand packages** (~2-5s latency):
+- Any PyPI package with a binary wheel available
+- Installed using UV (or pip fallback) with `--only-binary :all:` for security
+
+**Limits**:
+- Maximum 15 dependencies per request
+- Only binary wheels (source builds disabled for security)
+- 30 second installation timeout
+
 ### Exit Codes
 
 | Code | Meaning |
@@ -131,6 +158,8 @@ with open("./output/result.csv", "w") as f:
 | Single file | 5 MB |
 | Total context | 10 MB |
 | Total artifacts | 10 MB |
+| Dependencies | 15 packages |
+| Dependency timeout | 30 seconds |
 | Memory | ~1.5 GB |
 
 ## Deployment

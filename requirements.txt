@@ -1,2 +1,24 @@
 # Azure Functions SDK
 azure-functions~=1.18.0
+
+# Pre-installed packages for zero-latency access
+# Data Science
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.11.0
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
+
+# Web & API
+requests>=2.31.0
+httpx>=0.25.0
+beautifulsoup4>=4.12.0
+
+# Data Formats
+pyyaml>=6.0
+toml>=0.10.0
+python-dateutil>=2.8.0
+
+# Utilities
+tqdm>=4.66.0
+pillow>=10.0.0

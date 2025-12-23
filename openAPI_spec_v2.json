@@ -115,6 +115,16 @@
           "description": "Max seconds to allow script to run. Default: 60, max: 300.",
           "default": 60
         },
+        "dependencies": {
+          "type": "array",
+          "description": "Python packages to install before execution. Pre-installed packages (numpy, pandas, scipy, scikit-learn, matplotlib, requests, httpx, beautifulsoup4, pyyaml, toml, python-dateutil, tqdm, pillow) have zero latency. Others are installed via UV/pip (~2-5s). Max 15 packages. Uses --only-binary for security.",
+          "maxItems": 15,
+          "items": {
+            "type": "string",
+            "description": "Package name with optional version specifier (e.g., 'pandas', 'numpy>=1.24.0', 'requests==2.31.0')",
+            "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?(==|>=|<=|~=|!=|<|>)?[0-9]*(\\.[0-9]+)*$"
+          }
+        },
         "context": {
           "type": "object",
           "description": "Input files to provide to the script. Keys are filenames, values are file contents. Files are written to ./input/ before execution.",
