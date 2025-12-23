@@ -39,6 +39,7 @@ ENV PYTHONPATH=/home/site/wwwroot/.python_packages/lib/site-packages
 COPY function_app.py .
 COPY host.json .
 COPY requirements.txt .
+COPY src/ ./src/
 
 # Health check - verify function host is responding
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
