@@ -599,6 +599,15 @@ def _create_safe_environment() -> dict:
     safe_env["PYTHONIOENCODING"] = ENCODING_UTF8
     safe_env["PYTHONUNBUFFERED"] = "1"
 
+    # Add .python_packages to PYTHONPATH for Azure Functions bundled dependencies
+    packages_path = "/home/site/wwwroot/.python_packages/lib/site-packages"
+    if os.path.isdir(packages_path):
+        existing_path = safe_env.get("PYTHONPATH", "")
+        if existing_path:
+            safe_env["PYTHONPATH"] = f"{packages_path}:{existing_path}"
+        else:
+            safe_env["PYTHONPATH"] = packages_path
+
     return safe_env
 
 
