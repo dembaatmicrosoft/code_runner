@@ -27,6 +27,8 @@ from src.models import ContextFile, Dependency, ExecutionResult, FileEntry, Resu
 from src import dependencies as deps_module
 from src import files as files_module
 
+HARNESS_PATH = Path(__file__).parent / "harness.py"
+
 
 def create_safe_environment() -> dict:
     """
@@ -76,7 +78,7 @@ def run_subprocess(
         env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 
     process = subprocess.Popen(
-        [sys.executable, script_path],
+        [sys.executable, str(HARNESS_PATH), script_path],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=working_dir,

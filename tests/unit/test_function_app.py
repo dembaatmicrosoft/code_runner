@@ -1214,9 +1214,10 @@ class TestRunSubprocess:
 
     @patch('src.execution.subprocess.Popen')
     @patch('src.execution.sys.executable', '/usr/bin/python3')
-    def test_invokes_python_interpreter_directly(self, mock_popen):
-        """run_subprocess() uses sys.executable for consistent Python version.
+    def test_invokes_python_via_security_harness(self, mock_popen):
+        """run_subprocess() invokes scripts through the security harness.
 
+        The harness provides PEP 578 audit hook enforcement for runtime security.
         UTF-8 encoding is handled via PYTHONIOENCODING environment variable.
         """
         mock_process = Mock()
@@ -1229,7 +1230,10 @@ class TestRunSubprocess:
         run_subprocess("/tmp/script.py", "/tmp", 60)
 
         call_args = mock_popen.call_args
-        assert call_args[0][0] == ['/usr/bin/python3', '/tmp/script.py']
+        cmd = call_args[0][0]
+        assert cmd[0] == '/usr/bin/python3'
+        assert 'harness.py' in cmd[1]
+        assert cmd[2] == '/tmp/script.py'
 
     @patch('src.execution.subprocess.Popen')
     @patch('src.execution.sys.executable', '/usr/bin/python3')

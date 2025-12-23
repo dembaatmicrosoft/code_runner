@@ -81,3 +81,19 @@ SAFE_ENV_VARS = frozenset([
     "TZ",
     "PYTHONIOENCODING",
 ])
+
+# =============================================================================
+# Blocked Audit Events (PEP 578 Runtime Security)
+# =============================================================================
+BLOCKED_AUDIT_EVENTS: frozenset = frozenset([
+    # Network access
+    "socket.connect",
+    "socket.bind",
+    # Process execution
+    "subprocess.Popen",
+    "os.system",
+    # Low-level memory access
+    "ctypes.dlopen",
+    "ctypes.dlsym",
+    "ctypes.cdata",
+])
