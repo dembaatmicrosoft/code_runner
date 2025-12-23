@@ -44,10 +44,26 @@ The function will be available at `http://localhost:7071/api/run`
 
 ### Run Tests
 
+**Unit tests** (fast, no Docker required):
+
 ```bash
-pip install pytest
+pip install -r requirements-dev.txt
 pytest test_function_app.py -v
 ```
+
+**Integration tests** (requires Docker):
+
+```bash
+./scripts/run-integration-tests.sh
+```
+
+Or manually:
+
+```bash
+docker-compose -f docker/docker-compose.yml up --build --abort-on-container-exit
+```
+
+Integration tests run against a Docker container that simulates the Azure Functions environment, validating real subprocess execution, file I/O, and dependency installation.
 
 ## API Reference
 
@@ -59,7 +75,11 @@ POST /api/run
 
 ### Request Formats
 
-**JSON mode** (`Content-Type: application/json`):
+The API supports two modes: **Script mode** for inline code, and **Files mode** for multi-file projects.
+
+#### Script Mode (Legacy)
+
+For simple scripts, provide inline code with optional context files:
 
 ```json
 {
@@ -73,7 +93,37 @@ POST /api/run
 }
 ```
 
-**Raw mode** (`Content-Type: text/plain`):
+Context files are placed in `./input/` and accessed via `open('./input/data.csv')`.
+
+#### Files Mode (Multi-file Projects)
+
+For complex projects with multiple files and imports:
+
+```json
+{
+  "files": {
+    "main.py": "from utils import process\nprocess('data.csv')",
+    "utils.py": "def process(path):\n    with open(path) as f:\n        print(f.read())",
+    "data.csv": "col1,col2\n1,2",
+    "config/settings.json": "{\"debug\": true}",
+    "image.png": {"content": "<base64>", "encoding": "base64"}
+  },
+  "entry_point": "main.py",
+  "timeout_s": 60,
+  "dependencies": ["pandas"]
+}
+```
+
+Files mode features:
+- All files placed at execution root (natural paths: `open('data.csv')`)
+- Nested directories supported (`config/settings.json`)
+- Imports between files work (`from utils import process`)
+- Entry point must be a `.py` file
+- Cannot mix with `script`/`context` (mutually exclusive)
+
+#### Raw Mode
+
+For quick scripts via `Content-Type: text/plain`:
 
 - Body: Python script text
 - Query parameter: `?timeout_s=30`
@@ -92,12 +142,19 @@ POST /api/run
 }
 ```
 
-### Context Files
+### Input Files
 
-Scripts can read input files from the `./input/` directory:
+**Script mode (context):** Files are placed in `./input/`:
 
 ```python
 with open("./input/data.csv") as f:
+    data = f.read()
+```
+
+**Files mode:** Files are placed at execution root:
+
+```python
+with open("data.csv") as f:
     data = f.read()
 ```
 

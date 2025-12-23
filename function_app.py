@@ -152,6 +152,13 @@ class ContextFile:
 
 
 @dataclass
+class FileEntry:
+    """Represents a file in the files API (path can include directories)."""
+    content: str
+    encoding: str = ENCODING_UTF8
+
+
+@dataclass
 class ExecutionResult:
     """Result of script execution including artifacts."""
     exit_code: int
@@ -174,6 +181,15 @@ class Dependency:
     def is_pre_installed(self) -> bool:
         """Check if this package is pre-installed (ignores version)."""
         return self.name.lower() in PRE_INSTALLED_PACKAGES
+
+
+@dataclass
+class FilesRequest:
+    """Request using the files API (files + entry_point mode)."""
+    files: dict  # Raw files dict from request
+    entry_point: str
+    timeout_s: int
+    raw_deps: list  # Raw dependencies list
 
 
 def error_response(message: str, status_code: int = 400) -> func.HttpResponse:
@@ -241,6 +257,147 @@ def parse_context(raw_context: dict) -> Union[Dict[str, ContextFile], func.HttpR
             )
 
     return parsed
+
+
+def parse_files(raw_files: dict) -> Union[Dict[str, FileEntry], func.HttpResponse]:
+    """Parse raw files dict into FileEntry objects. Returns parsed files or error."""
+    if not isinstance(raw_files, dict):
+        return error_response("`files` must be an object.")
+
+    if not raw_files:
+        return error_response("`files` cannot be empty.")
+
+    parsed = {}
+    for path, value in raw_files.items():
+        if not isinstance(path, str):
+            return error_response(f"File path must be a string, got: {type(path).__name__}")
+
+        # Normalize path separators (accept both / and \, normalize to /)
+        normalized_path = path.replace("\\", "/")
+
+        if isinstance(value, str):
+            parsed[normalized_path] = FileEntry(content=value, encoding=ENCODING_UTF8)
+        elif isinstance(value, dict):
+            content = value.get("content")
+            encoding = value.get("encoding", ENCODING_UTF8)
+
+            if not isinstance(content, str):
+                return error_response(f"File '{path}' content must be a string.")
+            if encoding not in (ENCODING_UTF8, ENCODING_BASE64):
+                return error_response(f"File '{path}' encoding must be 'utf-8' or 'base64'.")
+
+            parsed[normalized_path] = FileEntry(content=content, encoding=encoding)
+        else:
+            return error_response(
+                f"File '{path}' must be a string or object with content/encoding."
+            )
+
+    return parsed
+
+
+def validate_file_path(path: str) -> Optional[str]:
+    """
+    Validate a file path for security.
+
+    Returns error message if invalid, None if valid.
+
+    Rules:
+    - No absolute paths (starting with / or drive letter)
+    - No path traversal (..)
+    - No leading dots (hidden files)
+    - No empty segments
+    """
+    if not path:
+        return "Path cannot be empty"
+
+    # Check for absolute paths
+    if path.startswith("/"):
+        return f"Absolute paths not allowed: '{path}'"
+
+    # Windows-style absolute paths (e.g., C:/)
+    if len(path) >= 2 and path[1] == ":":
+        return f"Absolute paths not allowed: '{path}'"
+
+    # Split into segments
+    segments = path.split("/")
+
+    for segment in segments:
+        if not segment:
+            # Empty segment (from // or trailing /)
+            continue
+        if segment == "..":
+            return f"Path traversal not allowed: '{path}'"
+        if segment.startswith("."):
+            return f"Hidden files/directories not allowed: '{path}'"
+
+    return None
+
+
+def decode_file_entry(file_entry: FileEntry) -> bytes:
+    """Decode file entry content based on encoding. Returns raw bytes."""
+    if file_entry.encoding == ENCODING_BASE64:
+        return base64.b64decode(file_entry.content)
+    return file_entry.content.encode(ENCODING_UTF8)
+
+
+def validate_files(
+    files: Dict[str, FileEntry],
+    entry_point: str
+) -> Optional[func.HttpResponse]:
+    """
+    Validate files constraints. Returns None if valid, error response otherwise.
+
+    Checks:
+    - File count limit
+    - Path validation (security)
+    - Entry point exists and is .py file
+    - Size limits per file and total
+    """
+    # Check file count
+    if len(files) > MAX_CONTEXT_FILES:
+        return error_response(f"Too many files: {len(files)} > {MAX_CONTEXT_FILES}")
+
+    # Validate entry point format
+    if not entry_point.endswith(".py"):
+        return error_response(f"Entry point must be a .py file: '{entry_point}'")
+
+    # Validate entry point path security
+    path_error = validate_file_path(entry_point)
+    if path_error:
+        return error_response(f"Invalid entry point path: {path_error}")
+
+    # Check entry point exists in files
+    if entry_point not in files:
+        return error_response(f"Entry point '{entry_point}' not found in files.")
+
+    total_bytes = 0
+    for path, file_entry in files.items():
+        # Validate path security
+        path_error = validate_file_path(path)
+        if path_error:
+            return error_response(f"Invalid file path: {path_error}")
+
+        # Decode and check size
+        try:
+            file_bytes = decode_file_entry(file_entry)
+        except Exception:
+            return error_response(f"Invalid base64 encoding for file '{path}'.")
+
+        file_size = len(file_bytes)
+        if file_size > MAX_SINGLE_FILE_BYTES:
+            return error_response(
+                f"File '{path}' too large: {file_size} > {MAX_SINGLE_FILE_BYTES} bytes.",
+                status_code=413
+            )
+        total_bytes += file_size
+
+    if total_bytes > MAX_CONTEXT_BYTES:
+        return error_response(
+            f"Total files too large: {total_bytes} > {MAX_CONTEXT_BYTES} bytes.",
+            status_code=413
+        )
+
+    return None
 
 
 def validate_context(context: Dict[str, ContextFile]) -> Optional[func.HttpResponse]:
@@ -413,8 +570,35 @@ def materialize_context(context: Dict[str, ContextFile], exec_dir: Path) -> None
         file_path.chmod(0o400)
 
 
-def collect_artifacts(exec_dir: Path) -> Union[dict, func.HttpResponse]:
-    """Collect files from output directory. Returns artifacts dict or error response."""
+def materialize_files(files: Dict[str, FileEntry], exec_dir: Path) -> None:
+    """
+    Write files to execution directory root with secure permissions.
+
+    Files are written directly to exec_dir (not input/), supporting nested paths.
+    Output directory is created for artifacts.
+    """
+    output_dir = exec_dir / OUTPUT_DIR
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    for path, file_entry in files.items():
+        file_bytes = decode_file_entry(file_entry)
+        file_path = exec_dir / path
+
+        # Create parent directories if needed (for nested paths like config/settings.json)
+        file_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+        file_path.write_bytes(file_bytes)
+        # Set file to read-only for the script
+        file_path.chmod(0o400)
+
+
+def collect_artifacts(exec_dir: Path, recursive: bool = False) -> Union[dict, func.HttpResponse]:
+    """Collect files from output directory. Returns artifacts dict or error response.
+
+    Args:
+        exec_dir: Execution directory containing output/ subdirectory
+        recursive: If True, collect files from nested directories. If False, only top-level files.
+    """
     output_dir = exec_dir / OUTPUT_DIR
 
     if not output_dir.exists():
@@ -423,7 +607,12 @@ def collect_artifacts(exec_dir: Path) -> Union[dict, func.HttpResponse]:
     artifacts = {}
     total_bytes = 0
 
-    for path in output_dir.iterdir():
+    if recursive:
+        paths = output_dir.rglob("*")
+    else:
+        paths = output_dir.iterdir()
+
+    for path in paths:
         if not path.is_file():
             continue
 
@@ -437,13 +626,23 @@ def collect_artifacts(exec_dir: Path) -> Union[dict, func.HttpResponse]:
                 status_code=500
             )
 
-        artifacts[path.name] = encode_file_content(file_bytes)
+        relative_path = path.relative_to(output_dir)
+        artifact_key = str(relative_path).replace("\\", "/")
+        artifacts[artifact_key] = encode_file_content(file_bytes)
 
     return artifacts
 
 
-def parse_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict, list], func.HttpResponse]:
-    """Extract script, timeout, raw context, and raw dependencies from request."""
+def parse_request(
+    req: func.HttpRequest
+) -> Union[Tuple[str, int, dict, list], FilesRequest, func.HttpResponse]:
+    """
+    Extract request parameters. Supports two modes:
+
+    Legacy mode (script + context): Returns (script, timeout_s, raw_context, raw_deps)
+    Files mode (files + entry_point): Returns FilesRequest
+    Raw text mode: Returns legacy tuple (script in body, no context)
+    """
     content_type = req.headers.get("content-type", "")
 
     if content_type.startswith(CONTENT_TYPE_TEXT):
@@ -468,25 +667,71 @@ def _parse_raw_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict, lis
         return error_response("`timeout_s` query parameter must be integer.")
 
 
-def _parse_json_request(req: func.HttpRequest) -> Union[Tuple[str, int, dict, list], func.HttpResponse]:
-    """Parse JSON request: script, timeout, context, and dependencies in body."""
+def _parse_json_request(
+    req: func.HttpRequest
+) -> Union[Tuple[str, int, dict, list], FilesRequest, func.HttpResponse]:
+    """
+    Parse JSON request. Supports two modes:
+
+    Legacy mode (script + context):
+        Returns (script, timeout_s, raw_context, raw_deps)
+
+    Files mode (files + entry_point):
+        Returns FilesRequest
+    """
     try:
         body = req.get_json()
     except ValueError:
         return error_response("Request body must be valid JSON.")
 
-    script = body.get("script")
-    if not isinstance(script, str):
-        return error_response("`script` field is required and must be a string.")
+    has_script = "script" in body
+    has_files = "files" in body
+    has_entry_point = "entry_point" in body
+    has_context = "context" in body
 
+    # Check for mutual exclusivity
+    if has_files and has_script:
+        return error_response("Cannot use both `files` and `script`. Choose one mode.")
+    if has_files and has_context:
+        return error_response("Cannot use both `files` and `context`. Use `files` for all input files.")
+    if has_entry_point and not has_files:
+        return error_response("`entry_point` requires `files` to be provided.")
+
+    # Parse timeout (common to both modes)
     timeout_raw = body.get("timeout_s", DEFAULT_TIMEOUT_S)
     try:
         timeout_s = int(timeout_raw)
     except (ValueError, TypeError):
         return error_response("`timeout_s` must be an integer.")
 
-    raw_context = body.get("context", {})
     raw_deps = body.get("dependencies", [])
+
+    # Files mode
+    if has_files:
+        raw_files = body.get("files")
+        if not isinstance(raw_files, dict):
+            return error_response("`files` must be an object.")
+
+        entry_point = body.get("entry_point")
+        if not isinstance(entry_point, str):
+            return error_response("`entry_point` is required and must be a string.")
+
+        # Normalize entry_point path separators
+        entry_point = entry_point.replace("\\", "/")
+
+        return FilesRequest(
+            files=raw_files,
+            entry_point=entry_point,
+            timeout_s=timeout_s,
+            raw_deps=raw_deps
+        )
+
+    # Legacy mode (script + context)
+    script = body.get("script")
+    if not isinstance(script, str):
+        return error_response("`script` field is required and must be a string.")
+
+    raw_context = body.get("context", {})
     return (script, timeout_s, raw_context, raw_deps)
 
 
@@ -553,6 +798,53 @@ def execute_script(
 
         # Collect artifacts
         artifacts = collect_artifacts(exec_dir)
+        if isinstance(artifacts, func.HttpResponse):
+            return artifacts
+
+        return ExecutionResult(
+            exit_code=result.exit_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            artifacts=artifacts,
+        )
+
+    finally:
+        _cleanup_exec_dir(exec_dir)
+
+
+def execute_files(
+    files: Dict[str, FileEntry],
+    entry_point: str,
+    timeout_s: int,
+    dependencies: Optional[List[Dependency]] = None,
+) -> Union[ExecutionResult, func.HttpResponse]:
+    """Execute files mode: materialize all files and run entry_point."""
+    dependencies = dependencies or []
+    exec_id = str(uuid.uuid4())
+    exec_dir = Path(tempfile.gettempdir()) / f"exec_{exec_id}"
+
+    try:
+        # Create execution directory with restrictive permissions (owner only)
+        exec_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+        # Install dependencies (only non-pre-installed ones)
+        deps_to_install = filter_pre_installed(dependencies)
+        if deps_to_install:
+            install_error = install_dependencies(deps_to_install, exec_dir)
+            if install_error:
+                return error_response(install_error, status_code=500)
+
+        # Materialize all files to execution directory
+        materialize_files(files, exec_dir)
+
+        # Entry point path
+        entry_point_path = exec_dir / entry_point
+
+        # Execute
+        result = _run_subprocess(str(entry_point_path), str(exec_dir), timeout_s)
+
+        # Collect artifacts (recursive for files mode)
+        artifacts = collect_artifacts(exec_dir, recursive=True)
         if isinstance(artifacts, func.HttpResponse):
             return artifacts
 
@@ -684,6 +976,13 @@ def _cleanup_exec_dir(exec_dir: Path) -> None:
 app = func.FunctionApp()
 
 
+@app.function_name(name="Health")
+@app.route(route="health", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def health(req: func.HttpRequest) -> func.HttpResponse:
+    """Health check endpoint for container orchestration."""
+    return func.HttpResponse("OK", status_code=200)
+
+
 @app.function_name(name="RunPythonScript")
 @app.route(route="run", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
 def run_script(req: func.HttpRequest) -> func.HttpResponse:
@@ -694,12 +993,126 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
 
     logging.info(f"[{request_id}] Received script execution request from {client_ip}")
 
-    # Parse request
+    # Parse request - returns FilesRequest, legacy tuple, or error
     parsed = parse_request(req)
     if isinstance(parsed, func.HttpResponse):
         return parsed
-    script, timeout_s, raw_context, raw_deps = parsed
 
+    # Dispatch based on request mode
+    if isinstance(parsed, FilesRequest):
+        return _handle_files_request(parsed, request_id, client_ip, start_time)
+    else:
+        script, timeout_s, raw_context, raw_deps = parsed
+        return _handle_legacy_request(
+            script, timeout_s, raw_context, raw_deps,
+            request_id, client_ip, start_time
+        )
+
+
+def _handle_files_request(
+    req: FilesRequest,
+    request_id: str,
+    client_ip: str,
+    start_time: float
+) -> func.HttpResponse:
+    """Handle files API mode request."""
+    # Parse files
+    parsed_files = parse_files(req.files)
+    if isinstance(parsed_files, func.HttpResponse):
+        return parsed_files
+
+    # Compute audit info (hash of entry_point content)
+    entry_content = parsed_files.get(req.entry_point)
+    if entry_content:
+        script_hash = hashlib.sha256(entry_content.content.encode(ENCODING_UTF8)).hexdigest()[:16]
+    else:
+        script_hash = "unknown"
+    total_size = sum(len(f.content) for f in parsed_files.values())
+
+    # Validate timeout
+    validated_timeout = validate_timeout(req.timeout_s)
+    if isinstance(validated_timeout, func.HttpResponse):
+        log_audit_event(
+            "request_rejected", request_id, client_ip, script_hash,
+            total_size, req.timeout_s, len(parsed_files),
+            error="invalid_timeout"
+        )
+        return validated_timeout
+
+    # Validate files (paths, sizes, entry_point exists)
+    files_error = validate_files(parsed_files, req.entry_point)
+    if files_error:
+        log_audit_event(
+            "request_rejected", request_id, client_ip, script_hash,
+            total_size, validated_timeout, len(parsed_files),
+            error="files_validation_failed"
+        )
+        return files_error
+
+    # Parse and validate dependencies
+    dependencies: List[Dependency] = []
+    dep_strings: List[str] = []
+    if req.raw_deps:
+        parsed_deps = parse_dependencies(req.raw_deps)
+        if isinstance(parsed_deps, func.HttpResponse):
+            log_audit_event(
+                "request_rejected", request_id, client_ip, script_hash,
+                total_size, validated_timeout, len(parsed_files),
+                error="invalid_dependencies"
+            )
+            return parsed_deps
+        dependencies = parsed_deps
+        dep_strings = [str(d) for d in dependencies]
+
+    # Acquire execution lock
+    with _execution_lock:
+        log_audit_event(
+            "execution_started", request_id, client_ip, script_hash,
+            total_size, validated_timeout, len(parsed_files),
+            dependencies=dep_strings
+        )
+
+        result = execute_files(parsed_files, req.entry_point, validated_timeout, dependencies)
+        duration_ms = (time.time() - start_time) * 1000
+
+        if isinstance(result, func.HttpResponse):
+            log_audit_event(
+                "execution_error", request_id, client_ip, script_hash,
+                total_size, validated_timeout, len(parsed_files),
+                dependencies=dep_strings, duration_ms=duration_ms,
+                error="execution_failed"
+            )
+            return result
+
+        log_audit_event(
+            "execution_completed", request_id, client_ip, script_hash,
+            total_size, validated_timeout, len(parsed_files),
+            dependencies=dep_strings, duration_ms=duration_ms,
+            exit_code=result.exit_code
+        )
+
+        return func.HttpResponse(
+            json.dumps({
+                "exit_code": result.exit_code,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "artifacts": result.artifacts,
+            }),
+            status_code=200,
+            mimetype=CONTENT_TYPE_JSON,
+        )
+
+
+def _handle_legacy_request(
+    script: str,
+    timeout_s: int,
+    raw_context: dict,
+    raw_deps: list,
+    request_id: str,
+    client_ip: str,
+    start_time: float
+) -> func.HttpResponse:
+    """Handle legacy API mode request (script + context)."""
     # Compute audit info early
     script_hash = compute_script_hash(script)
     script_size = len(script.encode(ENCODING_UTF8))
@@ -759,16 +1172,13 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
             return context_error
 
     # Acquire execution lock - ensures sequential processing
-    # This prevents concurrent scripts from interfering with each other
     with _execution_lock:
-        # Log execution start
         log_audit_event(
             "execution_started", request_id, client_ip, script_hash,
             script_size, validated_timeout, len(context),
             dependencies=dep_strings
         )
 
-        # Execute
         result = execute_script(script, validated_timeout, context, dependencies)
         duration_ms = (time.time() - start_time) * 1000
 
@@ -781,7 +1191,6 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
             )
             return result
 
-        # Log execution complete
         log_audit_event(
             "execution_completed", request_id, client_ip, script_hash,
             script_size, validated_timeout, len(context),

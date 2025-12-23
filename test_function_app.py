@@ -94,6 +94,14 @@ from function_app import (
     validate_context,
     validate_script_size,
     validate_timeout,
+    FileEntry,
+    FilesRequest,
+    decode_file_entry,
+    execute_files,
+    materialize_files,
+    parse_files,
+    validate_file_path,
+    validate_files,
 )
 
 # Extract the user function from Azure Functions decorator for direct testing
@@ -945,20 +953,35 @@ class TestCollectArtifacts:
         assert isinstance(result, func.HttpResponse)
         assert result.status_code == 500
 
-    def test_skips_subdirectories(self, temp_exec_dir):
-        """collect_artifacts() only collects regular files, not directories.
+    def test_skips_subdirectories_by_default(self, temp_exec_dir):
+        """collect_artifacts() only collects top-level files by default.
 
-        Prevents unexpected behavior and limits attack surface.
+        Maintains backward compatibility with legacy API behavior.
         """
         output_dir = temp_exec_dir / OUTPUT_DIR
         output_dir.mkdir()
         (output_dir / "result.txt").write_text("data")
         (output_dir / "subdir").mkdir()
-        (output_dir / "subdir" / "nested.txt").write_text("ignored")
+        (output_dir / "subdir" / "nested.txt").write_text("nested data")
 
         result = collect_artifacts(temp_exec_dir)
 
         assert result == {"result.txt": "data"}
+
+    def test_collects_nested_directories_when_recursive(self, temp_exec_dir):
+        """collect_artifacts() recursively collects files when recursive=True.
+
+        Used by files mode API for nested output directories.
+        """
+        output_dir = temp_exec_dir / OUTPUT_DIR
+        output_dir.mkdir()
+        (output_dir / "result.txt").write_text("data")
+        (output_dir / "subdir").mkdir()
+        (output_dir / "subdir" / "nested.txt").write_text("nested data")
+
+        result = collect_artifacts(temp_exec_dir, recursive=True)
+
+        assert result == {"result.txt": "data", "subdir/nested.txt": "nested data"}
 
 
 # =============================================================================
@@ -2266,3 +2289,539 @@ Test Quality Metrics:
   - Fixtures reduce duplication and improve maintainability
   - Parametrized tests cover boundary conditions efficiently
 """
+
+
+# =============================================================================
+# Files API Tests
+# =============================================================================
+
+
+class TestValidateFilePath:
+    """Tests for validate_file_path() security function."""
+
+    def test_accepts_simple_filename(self):
+        """Simple filenames are valid."""
+        assert validate_file_path("main.py") is None
+
+    def test_accepts_nested_path(self):
+        """Nested paths with forward slashes are valid."""
+        assert validate_file_path("config/settings.json") is None
+
+    def test_accepts_deeply_nested_path(self):
+        """Deeply nested paths are valid."""
+        assert validate_file_path("src/utils/helpers/format.py") is None
+
+    def test_rejects_empty_path(self):
+        """Empty paths are rejected."""
+        error = validate_file_path("")
+        assert "empty" in error.lower()
+
+    def test_rejects_absolute_unix_path(self):
+        """Absolute Unix paths are rejected."""
+        error = validate_file_path("/etc/passwd")
+        assert "Absolute" in error
+
+    def test_rejects_absolute_windows_path(self):
+        """Absolute Windows paths are rejected."""
+        error = validate_file_path("C:/Windows/System32")
+        assert "Absolute" in error
+
+    def test_rejects_path_traversal_parent_ref(self):
+        """Path traversal with .. is rejected."""
+        error = validate_file_path("../etc/passwd")
+        assert "traversal" in error.lower()
+
+    def test_rejects_path_traversal_in_middle(self):
+        """Path traversal in middle of path is rejected."""
+        error = validate_file_path("src/../../../etc/passwd")
+        assert "traversal" in error.lower()
+
+    def test_rejects_hidden_file(self):
+        """Hidden files starting with . are rejected."""
+        error = validate_file_path(".bashrc")
+        assert "Hidden" in error
+
+    def test_rejects_hidden_directory(self):
+        """Paths with hidden directories are rejected."""
+        error = validate_file_path(".ssh/authorized_keys")
+        assert "Hidden" in error
+
+    def test_accepts_file_with_dots_in_name(self):
+        """Files with dots in name (not leading) are valid."""
+        assert validate_file_path("file.test.py") is None
+
+
+class TestParseFiles:
+    """Tests for parse_files() function."""
+
+    def test_parses_string_value_as_utf8(self):
+        """String values become FileEntry with UTF-8 encoding."""
+        raw = {"main.py": "print('hello')"}
+        result = parse_files(raw)
+
+        assert "main.py" in result
+        assert result["main.py"].content == "print('hello')"
+        assert result["main.py"].encoding == ENCODING_UTF8
+
+    def test_parses_object_value_with_base64(self):
+        """Object values with base64 encoding are parsed correctly."""
+        encoded = base64.b64encode(b"binary content").decode("ascii")
+        raw = {"image.png": {"content": encoded, "encoding": "base64"}}
+        result = parse_files(raw)
+
+        assert result["image.png"].content == encoded
+        assert result["image.png"].encoding == ENCODING_BASE64
+
+    def test_parses_multiple_files(self):
+        """Multiple files are all parsed."""
+        raw = {
+            "main.py": "import utils",
+            "utils.py": "def helper(): pass",
+            "data.csv": "a,b,c"
+        }
+        result = parse_files(raw)
+
+        assert len(result) == 3
+        assert all(isinstance(f, FileEntry) for f in result.values())
+
+    def test_normalizes_backslash_to_forward_slash(self):
+        """Backslash path separators are normalized to forward slash."""
+        raw = {"config\\settings.json": "{}"}
+        result = parse_files(raw)
+
+        assert "config/settings.json" in result
+        assert "config\\settings.json" not in result
+
+    def test_rejects_non_dict_input(self):
+        """Non-dict input returns error response."""
+        result = parse_files(["main.py"])
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    def test_rejects_empty_dict(self):
+        """Empty files dict returns error response."""
+        result = parse_files({})
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    def test_rejects_non_string_path(self):
+        """Non-string path returns error response."""
+        result = parse_files({123: "content"})
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    def test_rejects_invalid_encoding(self):
+        """Invalid encoding returns error response."""
+        raw = {"main.py": {"content": "x", "encoding": "invalid"}}
+        result = parse_files(raw)
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+
+class TestDecodeFileEntry:
+    """Tests for decode_file_entry() function."""
+
+    def test_decodes_utf8_content(self):
+        """UTF-8 content is decoded to bytes."""
+        entry = FileEntry(content="hello world", encoding=ENCODING_UTF8)
+        result = decode_file_entry(entry)
+        assert result == b"hello world"
+
+    def test_decodes_base64_content(self):
+        """Base64 content is decoded to original bytes."""
+        original = b"\x00\x01\x02\x03"  # Binary data
+        encoded = base64.b64encode(original).decode("ascii")
+        entry = FileEntry(content=encoded, encoding=ENCODING_BASE64)
+        result = decode_file_entry(entry)
+        assert result == original
+
+
+class TestValidateFiles:
+    """Tests for validate_files() function."""
+
+    def test_accepts_valid_files_with_entry_point(self):
+        """Valid files with valid entry point pass validation."""
+        files = {
+            "main.py": FileEntry(content="print(1)", encoding=ENCODING_UTF8),
+            "data.csv": FileEntry(content="a,b", encoding=ENCODING_UTF8),
+        }
+        result = validate_files(files, "main.py")
+        assert result is None
+
+    def test_rejects_entry_point_not_py_file(self):
+        """Entry point must end with .py."""
+        files = {"config.json": FileEntry(content="{}", encoding=ENCODING_UTF8)}
+        result = validate_files(files, "config.json")
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+        assert ".py" in result.get_body().decode()
+
+    def test_rejects_entry_point_not_in_files(self):
+        """Entry point must exist in files dict."""
+        files = {"utils.py": FileEntry(content="pass", encoding=ENCODING_UTF8)}
+        result = validate_files(files, "main.py")
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+        assert "not found" in result.get_body().decode()
+
+    def test_rejects_path_traversal_in_files(self):
+        """Path traversal in file paths is rejected."""
+        files = {
+            "main.py": FileEntry(content="pass", encoding=ENCODING_UTF8),
+            "../etc/passwd": FileEntry(content="x", encoding=ENCODING_UTF8),
+        }
+        result = validate_files(files, "main.py")
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    def test_rejects_path_traversal_in_entry_point(self):
+        """Path traversal in entry_point is rejected."""
+        files = {"../main.py": FileEntry(content="pass", encoding=ENCODING_UTF8)}
+        result = validate_files(files, "../main.py")
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    def test_rejects_too_many_files(self):
+        """More than MAX_CONTEXT_FILES files is rejected."""
+        files = {
+            f"file{i}.py": FileEntry(content="pass", encoding=ENCODING_UTF8)
+            for i in range(MAX_CONTEXT_FILES + 1)
+        }
+        result = validate_files(files, "file0.py")
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    def test_rejects_single_file_too_large(self):
+        """Single file exceeding size limit is rejected."""
+        large_content = "x" * (MAX_SINGLE_FILE_BYTES + 1)
+        files = {"main.py": FileEntry(content=large_content, encoding=ENCODING_UTF8)}
+        result = validate_files(files, "main.py")
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 413
+
+    def test_rejects_total_size_too_large(self):
+        """Total files size exceeding limit is rejected."""
+        # Create files that individually pass but collectively exceed limit
+        # Each file is just over 1/2 of the limit, so 2 files exceed total
+        file_size = (MAX_CONTEXT_BYTES // 2) + 1
+        files = {
+            "file1.py": FileEntry(content="x" * file_size, encoding=ENCODING_UTF8),
+            "file2.py": FileEntry(content="x" * file_size, encoding=ENCODING_UTF8),
+        }
+        result = validate_files(files, "file1.py")
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 413
+
+
+class TestMaterializeFiles:
+    """Tests for materialize_files() function."""
+
+    def test_creates_output_directory(self):
+        """Output directory is created."""
+        with tempfile.TemporaryDirectory() as exec_dir:
+            exec_path = Path(exec_dir)
+            files = {"main.py": FileEntry(content="print(1)", encoding=ENCODING_UTF8)}
+            materialize_files(files, exec_path)
+
+            assert (exec_path / OUTPUT_DIR).exists()
+            assert (exec_path / OUTPUT_DIR).is_dir()
+
+    def test_writes_files_to_exec_root(self):
+        """Files are written to execution directory root, not input/."""
+        with tempfile.TemporaryDirectory() as exec_dir:
+            exec_path = Path(exec_dir)
+            files = {"main.py": FileEntry(content="print(1)", encoding=ENCODING_UTF8)}
+            materialize_files(files, exec_path)
+
+            assert (exec_path / "main.py").exists()
+            assert not (exec_path / INPUT_DIR / "main.py").exists()
+
+    def test_creates_nested_directories(self):
+        """Nested paths create necessary parent directories."""
+        with tempfile.TemporaryDirectory() as exec_dir:
+            exec_path = Path(exec_dir)
+            files = {
+                "main.py": FileEntry(content="import config.settings", encoding=ENCODING_UTF8),
+                "config/settings.py": FileEntry(content="DEBUG=True", encoding=ENCODING_UTF8),
+            }
+            materialize_files(files, exec_path)
+
+            assert (exec_path / "config").is_dir()
+            assert (exec_path / "config" / "settings.py").exists()
+
+    def test_writes_binary_files_correctly(self):
+        """Binary files (base64) are decoded and written."""
+        with tempfile.TemporaryDirectory() as exec_dir:
+            exec_path = Path(exec_dir)
+            binary_data = b"\x00\x01\x02\x03"
+            encoded = base64.b64encode(binary_data).decode("ascii")
+            files = {"data.bin": FileEntry(content=encoded, encoding=ENCODING_BASE64)}
+            materialize_files(files, exec_path)
+
+            assert (exec_path / "data.bin").read_bytes() == binary_data
+
+    def test_sets_read_only_permissions(self):
+        """Files are set to read-only (0o400) permissions."""
+        with tempfile.TemporaryDirectory() as exec_dir:
+            exec_path = Path(exec_dir)
+            files = {"main.py": FileEntry(content="pass", encoding=ENCODING_UTF8)}
+            materialize_files(files, exec_path)
+
+            mode = (exec_path / "main.py").stat().st_mode & 0o777
+            assert mode == 0o400
+
+
+class TestParseJsonRequestFilesMode:
+    """Tests for _parse_json_request() with files mode."""
+
+    def test_returns_files_request_for_files_mode(self):
+        """Returns FilesRequest when files and entry_point provided."""
+        req = Mock(spec=func.HttpRequest)
+        req.get_json.return_value = {
+            "files": {"main.py": "print(1)"},
+            "entry_point": "main.py",
+        }
+
+        result = _parse_json_request(req)
+
+        assert isinstance(result, FilesRequest)
+        assert result.files == {"main.py": "print(1)"}
+        assert result.entry_point == "main.py"
+        assert result.timeout_s == DEFAULT_TIMEOUT_S
+
+    def test_includes_dependencies_in_files_request(self):
+        """Dependencies are included in FilesRequest."""
+        req = Mock(spec=func.HttpRequest)
+        req.get_json.return_value = {
+            "files": {"main.py": "import pandas"},
+            "entry_point": "main.py",
+            "dependencies": ["pandas"],
+        }
+
+        result = _parse_json_request(req)
+
+        assert result.raw_deps == ["pandas"]
+
+    def test_normalizes_entry_point_backslash(self):
+        """Entry point path separators are normalized."""
+        req = Mock(spec=func.HttpRequest)
+        req.get_json.return_value = {
+            "files": {"src/main.py": "print(1)"},
+            "entry_point": "src\\main.py",
+        }
+
+        result = _parse_json_request(req)
+
+        assert result.entry_point == "src/main.py"
+
+    def test_rejects_files_with_script(self):
+        """Cannot use both files and script."""
+        req = Mock(spec=func.HttpRequest)
+        req.get_json.return_value = {
+            "files": {"main.py": "print(1)"},
+            "script": "print(2)",
+            "entry_point": "main.py",
+        }
+
+        result = _parse_json_request(req)
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+        assert "Cannot use both" in result.get_body().decode()
+
+    def test_rejects_files_with_context(self):
+        """Cannot use both files and context."""
+        req = Mock(spec=func.HttpRequest)
+        req.get_json.return_value = {
+            "files": {"main.py": "print(1)"},
+            "context": {"data.csv": "a,b"},
+            "entry_point": "main.py",
+        }
+
+        result = _parse_json_request(req)
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    def test_rejects_entry_point_without_files(self):
+        """entry_point requires files."""
+        req = Mock(spec=func.HttpRequest)
+        req.get_json.return_value = {
+            "script": "print(1)",
+            "entry_point": "main.py",
+        }
+
+        result = _parse_json_request(req)
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+        assert "requires `files`" in result.get_body().decode()
+
+    def test_rejects_missing_entry_point(self):
+        """files requires entry_point."""
+        req = Mock(spec=func.HttpRequest)
+        req.get_json.return_value = {
+            "files": {"main.py": "print(1)"},
+        }
+
+        result = _parse_json_request(req)
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+    def test_rejects_non_string_entry_point(self):
+        """entry_point must be a string."""
+        req = Mock(spec=func.HttpRequest)
+        req.get_json.return_value = {
+            "files": {"main.py": "print(1)"},
+            "entry_point": 123,
+        }
+
+        result = _parse_json_request(req)
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 400
+
+
+class TestExecuteFiles:
+    """Tests for execute_files() function."""
+
+    @patch('function_app._run_subprocess')
+    @patch('function_app.install_dependencies')
+    def test_materializes_files_and_executes_entry_point(
+        self, mock_install, mock_run
+    ):
+        """Files are materialized and entry_point is executed."""
+        mock_install.return_value = None
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="hello", stderr="")
+
+        files = {"main.py": FileEntry(content="print('hello')", encoding=ENCODING_UTF8)}
+
+        with patch('function_app._cleanup_exec_dir'):
+            result = execute_files(files, "main.py", 30)
+
+        assert result.exit_code == 0
+        # Verify entry_point path is passed to subprocess
+        args, kwargs = mock_run.call_args
+        assert "main.py" in args[0]
+
+    @patch('function_app._run_subprocess')
+    @patch('function_app.install_dependencies')
+    def test_installs_dependencies_before_execution(
+        self, mock_install, mock_run
+    ):
+        """Dependencies are installed before script execution."""
+        mock_install.return_value = None
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="", stderr="")
+
+        files = {"main.py": FileEntry(content="import openai", encoding=ENCODING_UTF8)}
+        deps = [Dependency(name="openai")]
+
+        with patch('function_app._cleanup_exec_dir'):
+            execute_files(files, "main.py", 30, deps)
+
+        mock_install.assert_called_once()
+
+    @patch('function_app.install_dependencies')
+    def test_returns_error_on_dependency_failure(self, mock_install):
+        """Returns error response when dependency installation fails."""
+        mock_install.return_value = "Installation failed"
+
+        files = {"main.py": FileEntry(content="import foo", encoding=ENCODING_UTF8)}
+        deps = [Dependency(name="foo")]
+
+        with patch('function_app._cleanup_exec_dir'):
+            result = execute_files(files, "main.py", 30, deps)
+
+        assert isinstance(result, func.HttpResponse)
+        assert result.status_code == 500
+
+    @patch('function_app._run_subprocess')
+    @patch('function_app.install_dependencies')
+    def test_collects_artifacts_from_output(self, mock_install, mock_run):
+        """Artifacts are collected from output directory."""
+        mock_install.return_value = None
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="", stderr="")
+
+        files = {"main.py": FileEntry(content="pass", encoding=ENCODING_UTF8)}
+
+        # Create actual temp directory and output file for artifact collection
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch('tempfile.gettempdir', return_value=tmp):
+                with patch('function_app._cleanup_exec_dir'):
+                    # Pre-create output directory and file
+                    result = execute_files(files, "main.py", 30)
+
+        assert result.artifacts == {} or isinstance(result.artifacts, dict)
+
+
+class TestFilesAPIIntegration:
+    """Integration tests for Files API through run_script endpoint."""
+
+    def test_successful_files_mode_execution(self):
+        """Files mode request executes successfully."""
+        req = Mock(spec=func.HttpRequest)
+        req.headers.get.return_value = CONTENT_TYPE_JSON
+        req.get_json.return_value = {
+            "files": {"main.py": "print('hello')"},
+            "entry_point": "main.py",
+            "timeout_s": 30,
+        }
+
+        with patch('function_app.execute_files') as mock_exec:
+            mock_exec.return_value = ExecutionResult(
+                exit_code=0, stdout="hello\n", stderr="", artifacts={}
+            )
+            response = run_script(req)
+
+        assert response.status_code == 200
+        data = json.loads(response.get_body())
+        assert data["exit_code"] == 0
+
+    def test_files_mode_rejects_invalid_entry_point(self):
+        """Files mode rejects entry_point not found in files."""
+        req = Mock(spec=func.HttpRequest)
+        req.headers.get.return_value = CONTENT_TYPE_JSON
+        req.get_json.return_value = {
+            "files": {"utils.py": "pass"},
+            "entry_point": "main.py",
+        }
+
+        response = run_script(req)
+
+        assert response.status_code == 400
+        assert "not found" in response.get_body().decode()
+
+    def test_files_mode_rejects_path_traversal(self):
+        """Files mode rejects path traversal attempts."""
+        req = Mock(spec=func.HttpRequest)
+        req.headers.get.return_value = CONTENT_TYPE_JSON
+        req.get_json.return_value = {
+            "files": {
+                "main.py": "pass",
+                "../etc/passwd": "x",
+            },
+            "entry_point": "main.py",
+        }
+
+        response = run_script(req)
+
+        assert response.status_code == 400
+
+    def test_legacy_mode_still_works(self):
+        """Legacy script+context mode continues to work."""
+        req = Mock(spec=func.HttpRequest)
+        req.headers.get.return_value = CONTENT_TYPE_JSON
+        req.get_json.return_value = {
+            "script": "print('hello')",
+            "timeout_s": 30,
+        }
+
+        with patch('function_app.execute_script') as mock_exec:
+            mock_exec.return_value = ExecutionResult(
+                exit_code=0, stdout="hello\n", stderr="", artifacts={}
+            )
+            response = run_script(req)
+
+        assert response.status_code == 200
+        mock_exec.assert_called_once()

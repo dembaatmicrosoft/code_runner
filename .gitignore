@@ -3,6 +3,7 @@ local.settings.json
 
 # Build artifacts
 deploy.zip
+.tmp_check/
 
 # Test coverage and artifacts
 .coverage

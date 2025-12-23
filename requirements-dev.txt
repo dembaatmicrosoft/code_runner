@@ -1,0 +1,13 @@
+# Test dependencies for CodeRunner
+# Install with: pip install -r requirements-dev.txt
+
+# Test framework
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-timeout>=2.2.0
+
+# HTTP client for integration tests
+httpx>=0.25.0
+
+# Code quality
+flake8>=6.1.0

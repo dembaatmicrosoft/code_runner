@@ -1,0 +1,67 @@
+version: "3.8"
+
+services:
+  # Azure Storage Emulator (required by Azure Functions Host)
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    ports:
+      - "10010:10000"  # Blob (external 10010 to avoid conflicts)
+      - "10011:10001"  # Queue
+      - "10012:10002"  # Table
+    networks:
+      - coderunner-net
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:10000', r => process.exit(r.statusCode === 400 ? 0 : 1)).on('error', () => process.exit(1))\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # CodeRunner Azure Functions container
+  coderunner:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    ports:
+      - "7071:80"
+    environment:
+      - AzureWebJobsStorage=DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;TableEndpoint=http://azurite:10002/devstoreaccount1;
+      - FUNCTIONS_WORKER_RUNTIME=python
+      - AzureFunctionsJobHost__Logging__Console__IsEnabled=true
+    depends_on:
+      azurite:
+        condition: service_healthy
+    networks:
+      - coderunner-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/api/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 45s
+      retries: 6
+
+  # Integration test runner
+  test-runner:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: test-runner
+    environment:
+      - CODERUNNER_URL=http://coderunner:80
+      - PYTHONDONTWRITEBYTECODE=1
+    depends_on:
+      coderunner:
+        condition: service_healthy
+    networks:
+      - coderunner-net
+    volumes:
+      - ../tests:/app/tests:ro
+      - test-results:/app/test-results
+
+volumes:
+  test-results:
+
+networks:
+  coderunner-net:
+    driver: bridge
