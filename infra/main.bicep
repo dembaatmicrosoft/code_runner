@@ -24,7 +24,7 @@ var storageBlobDataOwnerRoleId = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
 var storageAccountContributorRoleId = '17d1049b-9a84-46fb-8f53-869881c3d3ab'
 var storageFileDataPrivilegedContributorRoleId = '69566ab7-960f-475b-8e7c-b3118f30c6bd'
 
-var deployPackageUrl = 'https://github.com/dembaatmicrosoft/code_runner/releases/download/v1.1.0/deploy.zip'
+var deployPackageUrl = 'https://github.com/dembaatmicrosoft/code_runner/releases/download/v1.2.0/deploy.zip'
 
 // ---------------------------------------------------------------------------
 // Resources
