@@ -2,7 +2,7 @@
 
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fdembaatmicrosoft%2Fcode_runner%2Fmain%2Finfra%2Fazuredeploy.json)
 
-![CodeRunner](code_runner_app_lite.png)
+![CodeRunner](docs/images/architecture.png)
 
 A blazing-fast serverless Python execution API. One-click deploy to Azure, zero configuration required.
 

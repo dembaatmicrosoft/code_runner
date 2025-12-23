@@ -60,5 +60,5 @@ RUN pip install --no-cache-dir -r requirements-dev.txt
 # Copy test files
 COPY tests/ ./tests/
 
-# Default command runs pytest
-CMD ["pytest", "tests/", "-v", "--tb=short"]
+# Default command runs integration tests
+CMD ["pytest", "tests/integration/", "-v", "--tb=short"]

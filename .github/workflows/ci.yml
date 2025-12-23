@@ -43,9 +43,9 @@ jobs:
           pip install -r requirements.txt
           pip install pytest pytest-cov
 
-      - name: Run tests
+      - name: Run unit tests
         run: |
-          pytest test_function_app.py -v --cov=function_app --cov-report=term-missing
+          pytest tests/unit/ -v --cov=function_app --cov-report=term-missing
 
       - name: Check code style
         run: |
