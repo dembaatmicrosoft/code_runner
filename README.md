@@ -1,12 +1,17 @@
+<div align="center">
+
 # CodeRunner
 
 ![CodeRunner](docs/images/architecture.png)
 
-A Python execution API designed for AI agents.
+**A Python execution API designed for AI agents.**
 
+Give your agent the ability to write and run code.<br>
 One endpoint. JSON in, JSON out. Deploy to Azure in one click.
 
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fdembaatmicrosoft%2Fcode_runner%2Fmain%2Finfra%2Fazuredeploy.json)
+
+</div>
 
 ## The Contract
 
