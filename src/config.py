@@ -92,6 +92,10 @@ BLOCKED_AUDIT_EVENTS: frozenset = frozenset([
     # Process execution
     "subprocess.Popen",
     "os.system",
+    "os.exec",
+    "os.spawn",
+    "os.posix_spawn",
+    "os.fork",
     # Low-level memory access
     "ctypes.dlopen",
     "ctypes.dlsym",

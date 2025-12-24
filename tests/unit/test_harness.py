@@ -121,6 +121,42 @@ ctypes.CDLL('libc.so.6')
         assert exit_code != 0
         assert "ctypes" in stderr
 
+    def test_blocks_os_exec(self):
+        """Verify os.exec* family is blocked (prevents process replacement)."""
+        script = """
+import os
+os.execvp('echo', ['echo', 'hello'])
+"""
+        exit_code, stdout, stderr = run_script_with_harness(script)
+
+        assert exit_code != 0
+        assert "os.exec" in stderr
+        assert "Security policy violation" in stderr
+
+    def test_blocks_os_fork(self):
+        """Verify os.fork is blocked (used by os.spawn* on POSIX)."""
+        script = """
+import os
+os.fork()
+"""
+        exit_code, stdout, stderr = run_script_with_harness(script)
+
+        assert exit_code != 0
+        assert "os.fork" in stderr
+        assert "Security policy violation" in stderr
+
+    def test_blocks_os_posix_spawn(self):
+        """Verify os.posix_spawn is blocked."""
+        script = """
+import os
+os.posix_spawn('/bin/echo', ['/bin/echo', 'hello'], os.environ)
+"""
+        exit_code, stdout, stderr = run_script_with_harness(script)
+
+        assert exit_code != 0
+        assert "os.posix_spawn" in stderr
+        assert "Security policy violation" in stderr
+
 
 class TestAllowedOperations:
     """Tests that verify legitimate operations still work."""
