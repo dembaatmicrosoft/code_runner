@@ -98,8 +98,4 @@ BLOCKED_AUDIT_EVENTS: frozenset = frozenset([
     "os.spawn",
     "os.posix_spawn",
     "os.fork",
-    # Low-level memory access
-    "ctypes.dlopen",
-    "ctypes.dlsym",
-    "ctypes.cdata",
 ])

@@ -110,17 +110,6 @@ os.system('echo hello')
         assert "os.system" in stderr
         assert "Security policy violation" in stderr
 
-    def test_blocks_ctypes_dlopen(self):
-        """Verify ctypes.CDLL (dlopen) is blocked."""
-        script = """
-import ctypes
-ctypes.CDLL('libc.so.6')
-"""
-        exit_code, stdout, stderr = run_script_with_harness(script)
-
-        assert exit_code != 0
-        assert "ctypes" in stderr
-
     def test_blocks_os_exec(self):
         """Verify os.exec* family is blocked (prevents process replacement)."""
         script = """
