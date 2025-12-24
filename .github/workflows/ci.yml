@@ -148,6 +148,7 @@ jobs:
 
       - name: Generate matplotlib font cache
         run: |
+          export PYTHONPATH=${{ github.workspace }}/build/.python_packages/lib/site-packages
           export MPLCONFIGDIR=${{ github.workspace }}/build/.matplotlib
           python -c "
           import matplotlib
