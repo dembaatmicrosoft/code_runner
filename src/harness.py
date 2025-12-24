@@ -66,8 +66,10 @@ def main() -> int:
     except SystemExit as e:
         return e.code if isinstance(e.code, int) else 1
     except Exception as e:
-        # Print exception details to stderr for debugging
+        # Print diagnostic info and exception details to stderr
         import traceback
+        print(f"PYTHONPATH: {os.environ.get('PYTHONPATH', 'NOT SET')}", file=sys.stderr)
+        print(f"sys.path: {sys.path[:5]}...", file=sys.stderr)
         traceback.print_exc()
         return 1
 
