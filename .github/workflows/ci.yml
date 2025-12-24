@@ -99,11 +99,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Bicep CLI
-        uses: azure/bicep-setup@v1
-
       - name: Validate Bicep templates
         run: |
           echo "Validating main.bicep..."
-          bicep build infra/main.bicep --stdout > /dev/null
+          az bicep build --file infra/main.bicep --stdout > /dev/null
           echo "✅ main.bicep is valid"
