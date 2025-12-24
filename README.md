@@ -35,7 +35,7 @@ AI agents need to run code. Most execution APIs weren't designed with agents in 
 
 CodeRunner's API mirrors the tool-call patterns LLMs see in training data. The request/response contract is predictable: structured JSON in, structured JSON out. No parsing stdout for structure, no special error formats to learn. An agent can use this API without fighting its own intuitions.
 
-## What You Get
+## Core Features
 
 - **Pre-installed packages** - numpy, pandas, scipy, scikit-learn, matplotlib, requests ready to use
 - **File support** - Send files as base64, receive generated artifacts the same way
