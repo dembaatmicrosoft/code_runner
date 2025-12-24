@@ -12,6 +12,7 @@ Usage: python harness.py <script_path>
 Note: BLOCKED_EVENTS is defined here (not imported) to ensure the harness
 works regardless of PYTHONPATH or working directory when invoked as subprocess.
 """
+import os
 import runpy
 import sys
 
@@ -53,6 +54,11 @@ def main() -> int:
 
     script_path = sys.argv[1]
     sys.argv = sys.argv[1:]
+
+    # Add script's directory to sys.path for local imports
+    script_dir = os.path.dirname(os.path.abspath(script_path))
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
 
     try:
         runpy.run_path(script_path, run_name="__main__")
