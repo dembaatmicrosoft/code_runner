@@ -1,263 +1,211 @@
 # CodeRunner
 
+A Python execution API designed for AI agents.
+
+One endpoint. JSON in, JSON out. Deploy to Azure in one click.
+
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fdembaatmicrosoft%2Fcode_runner%2Fmain%2Finfra%2Fazuredeploy.json)
 
-![CodeRunner](docs/images/architecture.png)
-
-A blazing-fast serverless Python execution API. One-click deploy to Azure, zero configuration required.
-
-## Overview
-
-CodeRunner provides a simple HTTP API for running Python code on-demand. It supports:
-
-- **Script execution** with configurable timeout (up to 300 seconds)
-- **Context files** for providing input data to scripts
-- **Artifacts** for collecting output files from scripts
-- **Binary support** with automatic base64 encoding detection
-
-## Quick Start
-
-### Prerequisites
-
-- [Python 3.10+](https://www.python.org/downloads/)
-- [Azure Functions Core Tools v4](https://learn.microsoft.com/azure/azure-functions/functions-run-local)
-
-### Local Development
-
-```bash
-# Clone the repository
-git clone <repository-url>
-cd code_runner
-
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run locally
-func start
-```
-
-The function will be available at `http://localhost:7071/api/run`
-
-### Run Tests
-
-**Unit tests** (fast, no Docker required):
-
-```bash
-pip install -r requirements-dev.txt
-pytest test_function_app.py -v
-```
-
-**Integration tests** (requires Docker):
-
-```bash
-./scripts/run-integration-tests.sh
-```
-
-Or manually:
-
-```bash
-docker-compose -f docker/docker-compose.yml up --build --abort-on-container-exit
-```
-
-Integration tests run against a Docker container that simulates the Azure Functions environment, validating real subprocess execution, file I/O, and dependency installation.
-
-## API Reference
-
-### Endpoint
+## The Contract
 
 ```
 POST /api/run
 ```
 
-### Request Formats
+```json
+{"script": "print(2 + 2)"}
+```
 
-The API supports two modes: **Script mode** for inline code, and **Files mode** for multi-file projects.
+```json
+{"exit_code": 0, "stdout": "4\n", "stderr": "", "artifacts": {}}
+```
 
-#### Script Mode (Legacy)
+That's it. An LLM reading this understands immediately.
 
-For simple scripts, provide inline code with optional context files:
+## Why CodeRunner
+
+AI agents need to run code. Most execution APIs weren't designed with agents in mind - they require complex authentication flows, return unstructured output, or demand configuration that adds cognitive load to the agent.
+
+CodeRunner's API mirrors the tool-call patterns LLMs see in training data. The request/response contract is predictable: structured JSON in, structured JSON out. No parsing stdout for structure, no special error formats to learn. An agent can use this API without fighting its own intuitions.
+
+## What You Get
+
+- **Pre-installed packages** - numpy, pandas, scipy, scikit-learn, matplotlib, requests ready to use
+- **File support** - Send files as base64, receive generated artifacts the same way
+- **Multi-file projects** - Not just scripts; full project structures with imports
+- **On-demand dependencies** - Request any PyPI package with binary wheels
+- **Timeout control** - Up to 300 seconds per execution
+- **Zero configuration** - One-click Azure deployment, runs on free tier
+
+## Quick Start
+
+**After deploying**, test with curl:
+
+```bash
+curl -X POST "https://<your-app>.azurewebsites.net/api/run" \
+  -H "Content-Type: application/json" \
+  -d '{"script": "print(1 + 1)"}'
+```
+
+**From Python** (how an agent might call it):
+
+```python
+import requests
+
+response = requests.post(
+    "https://<your-app>.azurewebsites.net/api/run",
+    json={
+        "script": "import pandas as pd; print(pd.__version__)"
+    }
+)
+result = response.json()
+print(result["stdout"])  # "2.0.0\n"
+```
+
+**With files** (agent generating a chart):
+
+```python
+response = requests.post(
+    "https://<your-app>.azurewebsites.net/api/run",
+    json={
+        "script": """
+import matplotlib.pyplot as plt
+plt.plot([1, 2, 3], [1, 4, 9])
+plt.savefig('./output/chart.png')
+print('done')
+""",
+        "timeout_s": 30
+    }
+)
+result = response.json()
+chart_base64 = result["artifacts"]["chart.png"]["content"]
+```
+
+## Request Formats
+
+### Script Mode
+
+For inline code with optional input files:
 
 ```json
 {
-  "script": "import pandas as pd; print(pd.__version__)",
+  "script": "import json\nwith open('./input/data.json') as f:\n    print(json.load(f))",
   "timeout_s": 30,
-  "dependencies": ["pandas", "numpy>=1.24.0"],
+  "dependencies": ["requests"],
   "context": {
-    "data.csv": "col1,col2\n1,2",
-    "image.png": {"content": "<base64>", "encoding": "base64"}
+    "data.json": "{\"key\": \"value\"}"
   }
 }
 ```
 
-Context files are placed in `./input/` and accessed via `open('./input/data.csv')`.
+Context files go to `./input/`. Write output to `./output/` to return artifacts.
 
-#### Files Mode (Multi-file Projects)
+### Files Mode
 
-For complex projects with multiple files and imports:
+For multi-file projects:
 
 ```json
 {
   "files": {
-    "main.py": "from utils import process\nprocess('data.csv')",
-    "utils.py": "def process(path):\n    with open(path) as f:\n        print(f.read())",
-    "data.csv": "col1,col2\n1,2",
-    "config/settings.json": "{\"debug\": true}",
-    "image.png": {"content": "<base64>", "encoding": "base64"}
+    "main.py": "from utils import process\nprocess()",
+    "utils.py": "def process():\n    print('hello')",
+    "data.csv": "a,b\n1,2"
   },
   "entry_point": "main.py",
-  "timeout_s": 60,
-  "dependencies": ["pandas"]
+  "timeout_s": 60
 }
 ```
 
-Files mode features:
-- All files placed at execution root (natural paths: `open('data.csv')`)
-- Nested directories supported (`config/settings.json`)
-- Imports between files work (`from utils import process`)
-- Entry point must be a `.py` file
-- Cannot mix with `script`/`context` (mutually exclusive)
+All files at execution root. Imports work naturally.
 
-#### Raw Mode
+### Binary Files
 
-For quick scripts via `Content-Type: text/plain`:
-
-- Body: Python script text
-- Query parameter: `?timeout_s=30`
-
-### Response Format
+Base64 encoding for images, data files, or any binary content:
 
 ```json
 {
-  "exit_code": 0,
-  "stdout": "Hello, World!\n",
-  "stderr": "",
-  "artifacts": {
-    "result.csv": "output,data\n1,2",
-    "plot.png": {"content": "<base64>", "encoding": "base64"}
+  "script": "from PIL import Image\nimg = Image.open('./input/photo.png')\nprint(img.size)",
+  "context": {
+    "photo.png": {
+      "content": "iVBORw0KGgoAAAANSUhEUgAA...",
+      "encoding": "base64"
+    }
   }
 }
 ```
 
-### Input Files
-
-**Script mode (context):** Files are placed in `./input/`:
-
-```python
-with open("./input/data.csv") as f:
-    data = f.read()
-```
-
-**Files mode:** Files are placed at execution root:
-
-```python
-with open("data.csv") as f:
-    data = f.read()
-```
-
-### Artifacts
-
-Scripts can write output files to the `./output/` directory:
-
-```python
-import os
-os.makedirs("./output", exist_ok=True)
-with open("./output/result.csv", "w") as f:
-    f.write("output,data\n1,2")
-```
-
-### Dependencies
-
-Scripts can request Python packages via the `dependencies` field:
+Artifacts return in the same format:
 
 ```json
 {
-  "script": "import openai; print(openai.__version__)",
-  "dependencies": ["openai>=1.0.0"]
+  "artifacts": {
+    "output.png": {
+      "content": "iVBORw0KGgoAAAANSUhEUgAA...",
+      "encoding": "base64"
+    }
+  }
 }
 ```
 
-**Pre-installed packages** (zero latency):
-- Data Science: numpy, pandas, scipy, scikit-learn, matplotlib
-- Web & API: requests, httpx, beautifulsoup4
-- Data Formats: pyyaml, toml, python-dateutil
-- Utilities: tqdm, pillow
+## Response Format
 
-**On-demand packages** (~2-5s latency):
-- Any PyPI package with a binary wheel available
-- Installed using UV (or pip fallback) with `--only-binary :all:` for security
+Every response follows the same structure:
 
-**Limits**:
-- Maximum 15 dependencies per request
-- Only binary wheels (source builds disabled for security)
-- 30 second installation timeout
+```json
+{
+  "exit_code": 0,
+  "stdout": "...",
+  "stderr": "...",
+  "artifacts": {}
+}
+```
 
-### Exit Codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1+ | Script error |
-| 124 | Timeout |
-| 137 | Out of memory |
-| -1 | Internal error |
+| Field | Description |
+|-------|-------------|
+| `exit_code` | 0 = success, 1+ = script error, 124 = timeout |
+| `stdout` | Script's standard output |
+| `stderr` | Script's standard error |
+| `artifacts` | Files written to `./output/`, text or base64-encoded |
 
 ## Limits
 
 | Resource | Limit |
 |----------|-------|
-| Timeout | 300 seconds (max) |
-| Script size | 256 KiB |
-| Context files | 20 files |
+| Timeout | 300 seconds max |
+| Script size | 256 KB |
+| Context/artifacts | 10 MB total |
 | Single file | 5 MB |
-| Total context | 10 MB |
-| Total artifacts | 10 MB |
 | Dependencies | 15 packages |
-| Dependency timeout | 30 seconds |
-| Memory | ~1.5 GB |
 
-## Deployment
+## Pre-installed Packages
 
-### One-Click Deployment
+Available with zero latency:
 
-Click the button below to deploy CodeRunner to your Azure subscription:
+**Data Science**: numpy, pandas, scipy, scikit-learn, matplotlib
+**Web**: requests, httpx, beautifulsoup4
+**Formats**: pyyaml, toml, python-dateutil
+**Utilities**: tqdm, pillow
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fdembaatmicrosoft%2Fcode_runner%2Fmain%2Finfra%2Fazuredeploy.json)
+Other packages install on-demand (~2-5s).
 
-**That's it!** No CLI tools, no additional steps.
-
-#### After Deployment Completes (~2 minutes):
-
-1. Look for **"Your deployment is complete"** message
-2. Click **Outputs** in the left sidebar
-3. Copy `apiEndpoint` - this is your API URL
-4. Copy `testCommand` - paste in terminal to verify
+## Local Development
 
 ```bash
-# Example test (replace with your actual endpoint from Outputs):
-curl -X POST "https://coderunner-xxx.azurewebsites.net/api/run" \
-  -H "Content-Type: application/json" \
-  -d '{"script": "print(1+1)"}'
-
-# Expected response:
-# {"exit_code": 0, "stdout": "2\n", "stderr": "", "artifacts": {}}
+git clone https://github.com/dembaatmicrosoft/code_runner.git
+cd code_runner
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+func start
 ```
 
-**Cost**: $0/month within Azure Functions free tier (1M executions/month free)
+Available at `http://localhost:7071/api/run`
 
-### Alternative Deployment Options
+## Deployment Options
 
 <details>
 <summary>Azure Developer CLI</summary>
 
 ```bash
-# Install Azure Developer CLI
-curl -fsSL https://aka.ms/install-azd.sh | bash
-
-# Login and deploy
 azd auth login
 azd up
 ```
@@ -265,72 +213,39 @@ azd up
 </details>
 
 <details>
-<summary>Azure Functions Core Tools</summary>
+<summary>Azure CLI</summary>
 
 ```bash
-func azure functionapp publish <your-function-app-name> --python
-```
-
-</details>
-
-<details>
-<summary>Azure CLI (Manual)</summary>
-
-```bash
-# Create resources
-az group create --name <resource-group> --location <location>
-az storage account create --name <storage-name> --resource-group <resource-group>
+az group create --name coderunner-rg --location eastus
 az functionapp create \
-  --name <app-name> \
-  --resource-group <resource-group> \
-  --storage-account <storage-name> \
-  --consumption-plan-location <location> \
+  --name my-coderunner \
+  --resource-group coderunner-rg \
+  --consumption-plan-location eastus \
   --runtime python \
   --runtime-version 3.11 \
   --functions-version 4 \
   --os-type Linux
-
-# Deploy code
-func azure functionapp publish <app-name> --python
+func azure functionapp publish my-coderunner
 ```
 
 </details>
 
-### Managing Your Deployment
-
-```bash
-# View logs
-az functionapp log tail --name <function-app-name> --resource-group <resource-group>
-
-# Restart function app
-az functionapp restart --name <function-app-name> --resource-group <resource-group>
-
-# Delete all resources
-az group delete --name <resource-group>
-```
-
 ## Security
 
-This function executes arbitrary code and is intended for **trusted environments only**. See [SECURITY.md](SECURITY.md) for:
+CodeRunner follows security best practices for code execution:
 
-- Security considerations and limitations
-- Recommended deployment practices
-- How to report security issues
+- Process isolation with clean environment
+- Timeout enforcement with process tree cleanup
+- Path traversal prevention on file operations
+- Size limits on all inputs and outputs
+- Audit logging with request tracing
+
+See [SECURITY.md](SECURITY.md) for details and deployment recommendations.
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
-
-- Code of Conduct
-- Development setup
-- Coding standards
-- Pull request process
+Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Trademarks
-
-This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft trademarks or logos is subject to and must follow [Microsoft's Trademark & Brand Guidelines](https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks/usage/general). Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion or imply Microsoft sponsorship.
-
+MIT - see [LICENSE](LICENSE).
