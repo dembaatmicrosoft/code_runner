@@ -2,15 +2,17 @@
 # CodeRunner CI/CD Pipeline
 # =============================================================================
 #
-# This workflow runs on every push and pull request to ensure code quality.
+# This workflow runs on every push and pull request to ensure code quality,
+# and automatically releases when tests pass on main.
 #
 # Jobs:
 #   - test: Run unit tests and linting
 #   - integration-test: Run Docker-based integration tests
-#   - validate: Validate Bicep infrastructure templates
+#   - validate-infrastructure: Validate Bicep templates
+#   - build-release: Build and release deploy.zip (main branch only)
 #
-# For deployment to Azure, use `azd up` locally or set up Azure credentials
-# for automated deployment (see azure-deploy.yml.example).
+# The Bicep template uses releases/latest/download/deploy.zip, so every
+# successful merge to main automatically updates the deployment package.
 #
 # =============================================================================
 
@@ -55,7 +57,7 @@ jobs:
   integration-test:
     name: Integration Tests
     runs-on: ubuntu-latest
-    needs: test  # Only run if unit tests pass
+    needs: test
 
     steps:
       - name: Checkout code
@@ -104,3 +106,82 @@ jobs:
           echo "Validating main.bicep..."
           az bicep build --file infra/main.bicep --stdout > /dev/null
           echo "✅ main.bicep is valid"
+
+  # Build and release deployment package
+  # Only runs on push to main after all tests pass
+  build-release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    needs: [test, integration-test, validate-infrastructure]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Create build directory
+        run: |
+          mkdir -p build/.python_packages/lib/site-packages
+          mkdir -p build/.matplotlib
+
+      - name: Copy application files
+        run: |
+          cp function_app.py build/
+          cp host.json build/
+          cp requirements.txt build/
+          cp -r src build/
+
+      - name: Install bundled packages
+        run: |
+          pip install --target build/.python_packages/lib/site-packages \
+            numpy pandas scipy scikit-learn matplotlib \
+            requests httpx beautifulsoup4 \
+            pyyaml toml python-dateutil tqdm pillow \
+            --quiet
+
+      - name: Generate matplotlib font cache
+        run: |
+          export MPLCONFIGDIR=${{ github.workspace }}/build/.matplotlib
+          python -c "
+          import matplotlib
+          matplotlib.use('Agg')
+          from matplotlib import font_manager
+          print(f'Font cache generated with {len(font_manager.fontManager.ttflist)} fonts')
+          "
+          ls -la build/.matplotlib/
+
+      - name: Create deploy.zip
+        run: |
+          cd build
+          zip -rq ../deploy.zip .
+          cd ..
+          echo "Package size: $(du -h deploy.zip | cut -f1)"
+
+      - name: Delete existing latest release
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create release
+        run: |
+          gh release create latest deploy.zip \
+            --title "Latest Release" \
+            --notes "Automated build from commit $(echo ${{ github.sha }} | cut -c1-7)
+
+          **Pre-installed packages:**
+          - numpy, pandas, scipy, scikit-learn
+          - matplotlib (with bundled font cache)
+          - requests, httpx, beautifulsoup4
+          - pyyaml, toml, python-dateutil, tqdm, pillow
+
+          Built with Python 3.11 for Azure Functions."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

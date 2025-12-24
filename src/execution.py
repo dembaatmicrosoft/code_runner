@@ -34,6 +34,10 @@ HARNESS_PATH = Path(__file__).parent / "harness.py"
 APP_ROOT = Path(__file__).parent.parent
 BUNDLED_PACKAGES_DIR = APP_ROOT / ".python_packages" / "lib" / "site-packages"
 
+# Matplotlib config directory with pre-built font cache
+# This prevents matplotlib from spawning subprocess to scan fonts
+MATPLOTLIB_CONFIG_DIR = APP_ROOT / ".matplotlib"
+
 
 def create_safe_environment() -> dict:
     """
@@ -80,6 +84,9 @@ def run_subprocess(
 
     if pythonpath_parts:
         env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+
+    if MATPLOTLIB_CONFIG_DIR.exists():
+        env["MPLCONFIGDIR"] = str(MATPLOTLIB_CONFIG_DIR)
 
     process = subprocess.Popen(
         [sys.executable, str(HARNESS_PATH), script_path],
