@@ -8,16 +8,34 @@ It blocks dangerous operations (network, subprocess, ctypes) at the
 interpreter level before they reach the OS.
 
 Usage: python harness.py <script_path>
+
+Note: BLOCKED_EVENTS is defined here (not imported) to ensure the harness
+works regardless of PYTHONPATH or working directory when invoked as subprocess.
 """
 import runpy
 import sys
 
-from config import BLOCKED_AUDIT_EVENTS
+BLOCKED_EVENTS = frozenset([
+    # Network access
+    "socket.connect",
+    "socket.bind",
+    # Process execution
+    "subprocess.Popen",
+    "os.system",
+    "os.exec",
+    "os.spawn",
+    "os.posix_spawn",
+    "os.fork",
+    # Low-level memory access
+    "ctypes.dlopen",
+    "ctypes.dlsym",
+    "ctypes.cdata",
+])
 
 
 def _create_audit_hook():
     """Create audit hook that blocks dangerous operations."""
-    blocked = BLOCKED_AUDIT_EVENTS
+    blocked = BLOCKED_EVENTS
 
     def audit_hook(event: str, args: tuple) -> None:
         if event in blocked:

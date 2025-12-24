@@ -84,6 +84,8 @@ SAFE_ENV_VARS = frozenset([
 
 # =============================================================================
 # Blocked Audit Events (PEP 578 Runtime Security)
+# Note: These are duplicated in src/harness.py for subprocess isolation.
+# Keep both lists in sync when modifying.
 # =============================================================================
 BLOCKED_AUDIT_EVENTS: frozenset = frozenset([
     # Network access
