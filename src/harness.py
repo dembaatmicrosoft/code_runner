@@ -65,6 +65,11 @@ def main() -> int:
         return 0
     except SystemExit as e:
         return e.code if isinstance(e.code, int) else 1
+    except Exception as e:
+        # Print exception details to stderr for debugging
+        import traceback
+        traceback.print_exc()
+        return 1
 
 
 if __name__ == "__main__":
