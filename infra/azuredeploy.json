@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "14469218328049917381"
+      "templateHash": "15528010699276094338"
     }
   },
   "parameters": {
@@ -140,6 +140,10 @@
             {
               "name": "SCM_DO_BUILD_DURING_DEPLOYMENT",
               "value": "false"
+            },
+            {
+              "name": "PYTHONPATH",
+              "value": "/home/site/wwwroot/.python_packages/lib/site-packages"
             }
           ]
         }

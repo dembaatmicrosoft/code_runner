@@ -129,6 +129,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           name: 'SCM_DO_BUILD_DURING_DEPLOYMENT'
           value: 'false'
         }
+        {
+          name: 'PYTHONPATH'
+          value: '/home/site/wwwroot/.python_packages/lib/site-packages'
+        }
       ]
     }
   }
