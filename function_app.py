@@ -24,7 +24,7 @@ from src.models import Result
 from src import audit
 from src import execution
 from src import files as files_module
-from src import http
+from src import responses
 from src import parsing
 from src import validation
 
@@ -52,7 +52,7 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
     - Files: files + entry_point + optional dependencies
     """
     request_id = audit.generate_request_id()
-    client_ip = http.get_client_ip(req)
+    client_ip = responses.get_client_ip(req)
     logging.info(f"[{request_id}] Received script execution request from {client_ip}")
 
     # Parse request based on content type
@@ -62,14 +62,14 @@ def run_script(req: func.HttpRequest) -> func.HttpResponse:
         try:
             body = req.get_json()
         except ValueError:
-            return http.error_response("Invalid JSON in request body.")
+            return responses.error_response("Invalid JSON in request body.")
 
         # Detect mode: files or legacy (mutually exclusive)
         has_files = "files" in body
         has_script = "script" in body
 
         if has_files and has_script:
-            return http.error_response(
+            return responses.error_response(
                 "Cannot use both 'files' and 'script' in the same request."
             )
 
@@ -91,10 +91,10 @@ def _handle_raw_mode(
     try:
         script = req.get_body().decode("utf-8")
     except UnicodeDecodeError:
-        return http.error_response("Request body must be valid UTF-8 text.")
+        return responses.error_response("Request body must be valid UTF-8 text.")
 
     if not script.strip():
-        return http.error_response("Script cannot be empty.")
+        return responses.error_response("Script cannot be empty.")
 
     timeout_param = req.params.get("timeout_s")
     if timeout_param is None:
@@ -103,7 +103,7 @@ def _handle_raw_mode(
         try:
             timeout_s = int(timeout_param)
         except ValueError:
-            return http.error_response("`timeout_s` query parameter must be integer.")
+            return responses.error_response("`timeout_s` query parameter must be integer.")
 
     # Create legacy request and process
     body = {"script": script, "timeout_s": timeout_s}
@@ -119,32 +119,32 @@ def _handle_legacy_mode(
     # Parse request
     parse_result = parsing.parse_legacy_request(body)
     if parse_result.is_failure:
-        return http.error_response(parse_result.error)
+        return responses.error_response(parse_result.error)
 
     req = parse_result.value
 
     # Validate timeout
     timeout_result = validation.validate_timeout(req.timeout_s)
     if timeout_result.is_failure:
-        return http.error_response(timeout_result.error)
+        return responses.error_response(timeout_result.error)
     validated_timeout = timeout_result.value
 
     # Validate script size
     size_result = validation.validate_script_size(req.script)
     if size_result.is_failure:
-        return http.error_response(size_result.error, status_code=413)
+        return responses.error_response(size_result.error, status_code=413)
 
     # Parse dependencies
     deps_result = parsing.parse_dependencies(req.raw_deps)
     if deps_result.is_failure:
-        return http.error_response(deps_result.error)
+        return responses.error_response(deps_result.error)
     dependencies = deps_result.value
     dep_strings = [str(d) for d in dependencies]
 
     # Parse context
     context_result = parsing.parse_context(req.raw_context)
     if context_result.is_failure:
-        return http.error_response(context_result.error)
+        return responses.error_response(context_result.error)
     context = context_result.value
 
     # Validate context
@@ -153,7 +153,7 @@ def _handle_legacy_mode(
 
     context_validation = validation.validate_context_files(context, get_context_size)
     if context_validation.is_failure:
-        return http.error_response(context_validation.error)
+        return responses.error_response(context_validation.error)
 
     # Create audit context
     audit_ctx = audit.create_audit_context(
@@ -182,10 +182,10 @@ def _handle_legacy_mode(
         # Check for setup errors
         if isinstance(result, Result):
             audit_ctx.log_failed(result.error)
-            return http.error_response(result.error, status_code=500)
+            return responses.error_response(result.error, status_code=500)
 
         audit_ctx.log_completed(result.exit_code, duration_ms)
-        return http.success_response(result)
+        return responses.success_response(result)
 
 
 def _handle_files_mode(
@@ -197,20 +197,20 @@ def _handle_files_mode(
     # Parse request
     parse_result = parsing.parse_files_request(body)
     if parse_result.is_failure:
-        return http.error_response(parse_result.error)
+        return responses.error_response(parse_result.error)
 
     req = parse_result.value
 
     # Parse files
     files_result = parsing.parse_files(req.files)
     if files_result.is_failure:
-        return http.error_response(files_result.error)
+        return responses.error_response(files_result.error)
     parsed_files = files_result.value
 
     # Validate timeout
     timeout_result = validation.validate_timeout(req.timeout_s)
     if timeout_result.is_failure:
-        return http.error_response(timeout_result.error)
+        return responses.error_response(timeout_result.error)
     validated_timeout = timeout_result.value
 
     # Validate entry point
@@ -218,7 +218,7 @@ def _handle_files_mode(
         req.entry_point, set(parsed_files.keys())
     )
     if entry_point_result.is_failure:
-        return http.error_response(entry_point_result.error)
+        return responses.error_response(entry_point_result.error)
 
     # Validate files collection
     def get_file_size(fe):
@@ -226,12 +226,12 @@ def _handle_files_mode(
 
     files_validation = validation.validate_files_api(parsed_files, get_file_size)
     if files_validation.is_failure:
-        return http.error_response(files_validation.error)
+        return responses.error_response(files_validation.error)
 
     # Parse dependencies
     deps_result = parsing.parse_dependencies(req.raw_deps)
     if deps_result.is_failure:
-        return http.error_response(deps_result.error)
+        return responses.error_response(deps_result.error)
     dependencies = deps_result.value
     dep_strings = [str(d) for d in dependencies]
 
@@ -263,7 +263,7 @@ def _handle_files_mode(
         # Check for setup errors
         if isinstance(result, Result):
             audit_ctx.log_failed(result.error)
-            return http.error_response(result.error, status_code=500)
+            return responses.error_response(result.error, status_code=500)
 
         audit_ctx.log_completed(result.exit_code, duration_ms)
-        return http.success_response(result)
+        return responses.success_response(result)

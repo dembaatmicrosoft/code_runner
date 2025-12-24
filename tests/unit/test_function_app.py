@@ -75,7 +75,7 @@ from src.models import (
     FilesRequest,
     Result,
 )
-from src.http import error_response, get_client_ip
+from src.responses import error_response, get_client_ip
 from src.audit import compute_script_hash
 from src.validation import (
     validate_timeout,
