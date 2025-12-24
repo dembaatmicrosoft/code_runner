@@ -165,9 +165,28 @@ resource storageFileDataContributorRole 'Microsoft.Authorization/roleAssignments
   }
 }
 
+resource scmBasicAuth 'Microsoft.Web/sites/basicPublishingCredentialsPolicies@2023-12-01' = {
+  parent: functionApp
+  name: 'scm'
+  properties: {
+    allow: true
+  }
+}
+
+resource ftpBasicAuth 'Microsoft.Web/sites/basicPublishingCredentialsPolicies@2023-12-01' = {
+  parent: functionApp
+  name: 'ftp'
+  properties: {
+    allow: true
+  }
+}
+
 resource sourceControl 'Microsoft.Web/sites/sourcecontrols@2023-12-01' = {
   parent: functionApp
   name: 'web'
+  dependsOn: [
+    scmBasicAuth
+  ]
   properties: {
     repoUrl: repoUrl
     branch: branch

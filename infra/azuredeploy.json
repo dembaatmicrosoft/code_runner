@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "11856614476949501476"
+      "templateHash": "8669565169013153615"
     }
   },
   "parameters": {
@@ -197,6 +197,28 @@
       ]
     },
     {
+      "type": "Microsoft.Web/sites/basicPublishingCredentialsPolicies",
+      "apiVersion": "2023-12-01",
+      "name": "[format('{0}/{1}', variables('functionAppName'), 'scm')]",
+      "properties": {
+        "allow": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites/basicPublishingCredentialsPolicies",
+      "apiVersion": "2023-12-01",
+      "name": "[format('{0}/{1}', variables('functionAppName'), 'ftp')]",
+      "properties": {
+        "allow": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
+      ]
+    },
+    {
       "type": "Microsoft.Web/sites/sourcecontrols",
       "apiVersion": "2023-12-01",
       "name": "[format('{0}/{1}', variables('functionAppName'), 'web')]",
@@ -206,7 +228,8 @@
         "isManualIntegration": true
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]",
+        "[resourceId('Microsoft.Web/sites/basicPublishingCredentialsPolicies', variables('functionAppName'), 'scm')]"
       ]
     }
   ],
