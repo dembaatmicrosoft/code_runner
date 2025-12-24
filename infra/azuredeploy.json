@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "2184814971858101093"
+      "templateHash": "15298669942996682370"
     }
   },
   "parameters": {
@@ -132,10 +132,6 @@
             {
               "name": "WEBSITE_RUN_FROM_PACKAGE",
               "value": "[variables('deployPackageUrl')]"
-            },
-            {
-              "name": "PYTHONPATH",
-              "value": "/home/site/wwwroot/.python_packages/lib/site-packages"
             }
           ]
         }

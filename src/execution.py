@@ -29,6 +29,11 @@ from src import files as files_module
 
 HARNESS_PATH = Path(__file__).parent / "harness.py"
 
+# Bundled packages directory (relative to app root, not working dir)
+# This is where packages are installed in the deploy.zip
+APP_ROOT = Path(__file__).parent.parent
+BUNDLED_PACKAGES_DIR = APP_ROOT / ".python_packages" / "lib" / "site-packages"
+
 
 def create_safe_environment() -> dict:
     """
@@ -65,14 +70,13 @@ def run_subprocess(
     Returns ExecutionResult with exit_code, stdout, stderr.
     """
     env = create_safe_environment()
-    packages_dir = Path(working_dir) / ".packages"
+    on_demand_packages_dir = Path(working_dir) / ".packages"
 
     pythonpath_parts = []
-    bundled = os.environ.get("PYTHONPATH", "")
-    if bundled:
-        pythonpath_parts.append(bundled)
-    if packages_dir.exists():
-        pythonpath_parts.append(str(packages_dir))
+    if BUNDLED_PACKAGES_DIR.exists():
+        pythonpath_parts.append(str(BUNDLED_PACKAGES_DIR))
+    if on_demand_packages_dir.exists():
+        pythonpath_parts.append(str(on_demand_packages_dir))
 
     if pythonpath_parts:
         env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)

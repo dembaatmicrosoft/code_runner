@@ -121,10 +121,6 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           name: 'WEBSITE_RUN_FROM_PACKAGE'
           value: deployPackageUrl
         }
-        {
-          name: 'PYTHONPATH'
-          value: '/home/site/wwwroot/.python_packages/lib/site-packages'
-        }
       ]
     }
   }
