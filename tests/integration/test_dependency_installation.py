@@ -59,7 +59,7 @@ print(f"requests {requests.__version__}")
         response = run_script(script)
         data = response.json()
 
-        assert data["exit_code"] == 0
+        assert data["exit_code"] == 0, f"stderr: {data.get('stderr', 'N/A')}"
         assert "requests" in data["stdout"]
 
 
