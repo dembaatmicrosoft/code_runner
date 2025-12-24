@@ -24,7 +24,8 @@ var storageBlobDataOwnerRoleId = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
 var storageAccountContributorRoleId = '17d1049b-9a84-46fb-8f53-869881c3d3ab'
 var storageFileDataPrivilegedContributorRoleId = '69566ab7-960f-475b-8e7c-b3118f30c6bd'
 
-var deployPackageUrl = 'https://github.com/dembaatmicrosoft/code_runner/releases/download/v1.2.0/deploy.zip'
+var repoUrl = 'https://github.com/dembaatmicrosoft/code_runner'
+var branch = 'main'
 
 // ---------------------------------------------------------------------------
 // Resources
@@ -118,16 +119,12 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: 'python'
         }
         {
-          name: 'WEBSITE_RUN_FROM_PACKAGE'
-          value: deployPackageUrl
-        }
-        {
-          name: 'WEBSITE_ENABLE_SYNC_UPDATE_SITE'
+          name: 'ENABLE_ORYX_BUILD'
           value: 'true'
         }
         {
           name: 'SCM_DO_BUILD_DURING_DEPLOYMENT'
-          value: 'false'
+          value: 'true'
         }
         {
           name: 'PYTHONPATH'
@@ -165,6 +162,16 @@ resource storageFileDataContributorRole 'Microsoft.Authorization/roleAssignments
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageFileDataPrivilegedContributorRoleId)
     principalId: functionApp.identity.principalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+resource sourceControl 'Microsoft.Web/sites/sourcecontrols@2023-12-01' = {
+  parent: functionApp
+  name: 'web'
+  properties: {
+    repoUrl: repoUrl
+    branch: branch
+    isManualIntegration: true
   }
 }
 
