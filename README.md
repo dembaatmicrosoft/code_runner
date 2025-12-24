@@ -1,5 +1,7 @@
 # CodeRunner
 
+![CodeRunner](docs/images/architecture.png)
+
 A Python execution API designed for AI agents.
 
 One endpoint. JSON in, JSON out. Deploy to Azure in one click.
