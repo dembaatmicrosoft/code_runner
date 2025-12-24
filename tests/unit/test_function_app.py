@@ -451,7 +451,7 @@ class TestParseRequest:
 
     @patch('function_app._handle_raw_mode')
     @patch('function_app.audit.generate_request_id')
-    @patch('function_app.http.get_client_ip')
+    @patch('function_app.responses.get_client_ip')
     def test_routes_text_plain_to_raw_parser(
         self, mock_get_ip, mock_gen_id, mock_handle_raw, mock_request_text
     ):
@@ -470,7 +470,7 @@ class TestParseRequest:
 
     @patch('function_app._handle_legacy_mode')
     @patch('function_app.audit.generate_request_id')
-    @patch('function_app.http.get_client_ip')
+    @patch('function_app.responses.get_client_ip')
     def test_routes_application_json_to_json_parser(
         self, mock_get_ip, mock_gen_id, mock_handle_legacy, mock_request_json
     ):
@@ -488,7 +488,7 @@ class TestParseRequest:
 
     @patch('function_app._handle_raw_mode')
     @patch('function_app.audit.generate_request_id')
-    @patch('function_app.http.get_client_ip')
+    @patch('function_app.responses.get_client_ip')
     def test_defaults_to_raw_when_no_content_type(
         self, mock_get_ip, mock_gen_id, mock_handle_raw
     ):
